@@ -12,6 +12,7 @@ FROM deps AS build-api
 
 WORKDIR /app
 COPY apps/api apps/api
+ENV NODE_OPTIONS="--max-old-space-size=1536"
 RUN npm run build:api
 
 # ── Stage 3: Build Frontend ──────────────────────────────────────────────────
@@ -22,6 +23,7 @@ COPY apps/frontend apps/frontend
 
 ARG NEXT_PUBLIC_API_URL=http://localhost:4000
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+ENV NODE_OPTIONS="--max-old-space-size=1536"
 
 RUN npm run build:frontend
 
