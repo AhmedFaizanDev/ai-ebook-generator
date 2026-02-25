@@ -1,0 +1,18 @@
+{
+  "name": "ebook-generator",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev:api & npm run dev:frontend",
+    "dev:api": "npm run dev --workspace=apps/api",
+    "dev:frontend": "npm run dev --workspace=apps/frontend",
+    "build": "npm run build --workspace=apps/api && npm run build --workspace=apps/frontend",
+    "build:api": "npm run build --workspace=apps/api",
+    "build:frontend": "npm run build --workspace=apps/frontend",
+    "start:api": "npm run start --workspace=apps/api",
+    "start:frontend": "npm run start --workspace=apps/frontend"
+  }
+}

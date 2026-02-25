@@ -1,0 +1,40 @@
+# dependencies
+node_modules/
+
+# next.js
+.next/
+out/
+
+# api build
+apps/api/dist/
+
+# production
+build/
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# env files
+.env
+.env*.local
+apps/api/.env
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# testing
+coverage/
+
+# session persistence
+.sessions/
+apps/api/.sessions/

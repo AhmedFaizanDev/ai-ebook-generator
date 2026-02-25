@@ -1,0 +1,36 @@
+{
+  "name": "ebook-generator-api",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc && tsc-alias",
+    "start": "node dist/index.js",
+    "batch": "tsx src/cli/batch.ts",
+    "batch-status": "tsx src/cli/batch-status.ts"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "csv-parse": "^6.1.0",
+    "dotenv": "^16.4.7",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.2",
+    "googleapis": "^171.4.0",
+    "highlight.js": "^11.11.1",
+    "html-to-docx": "^1.8.0",
+    "marked": "^17.0.3",
+    "multer": "^2.0.2",
+    "openai": "^4.77.0",
+    "pdf-lib": "^1.17.1",
+    "puppeteer": "^24.37.5"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^20.17.0",
+    "tsc-alias": "^1.8.10",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

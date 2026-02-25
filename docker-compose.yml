@@ -1,0 +1,31 @@
+services:
+  app:
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:4000
+    ports:
+      - "3000:3000"
+      - "4000:4000"
+    env_file:
+      - ./apps/api/.env
+    environment:
+      - NODE_ENV=production
+      - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+      - PUPPETEER_DOCKER=true
+      - BATCH_PROGRESS_FILE=/app/apps/api/.batch-progress/.batch-progress.json
+    volumes:
+      - sessions:/app/apps/api/.sessions
+      - batch_progress:/app/apps/api/.batch-progress
+      - ./apps/api:/data:ro
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+        reservations:
+          memory: 2g
+
+volumes:
+  sessions:
+  batch_progress:

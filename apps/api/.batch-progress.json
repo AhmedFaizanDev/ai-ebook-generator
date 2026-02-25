@@ -1,0 +1,13 @@
+{
+  "completed": [
+    "Introduction to Machine Learning Algorithms",
+    "Neural Networks and Deep Learning",
+    "introduction to AWS",
+    "AWS Cloud Computing"
+  ],
+  "failed": [
+    "AWS Cloud Computing"
+  ],
+  "startedAt": "2026-02-24T11:07:54.503Z",
+  "lastUpdatedAt": "2026-02-25T17:37:05.018Z"
+}
