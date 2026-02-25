@@ -20,6 +20,7 @@ FROM deps AS build-frontend
 
 WORKDIR /app
 COPY apps/frontend apps/frontend
+RUN mkdir -p /app/apps/frontend/public
 
 ARG NEXT_PUBLIC_API_URL=http://localhost:4000
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}

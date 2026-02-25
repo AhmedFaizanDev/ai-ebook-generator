@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, Suspense } from 'react';
 import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import GeneratorForm from '@/components/GeneratorForm';
 import SyllabusPhase from '@/components/SyllabusPhase';
@@ -9,7 +9,18 @@ import { useProgressStream } from '@/hooks/useProgressStream';
 
 type AppState = 'idle' | 'generating' | 'failed';
 
-export default function Home() {
+function HomeFallback() {
+  return (
+    <main className="min-h-screen bg-zinc-950 flex flex-col items-center justify-center px-4 py-12">
+      <div className="mb-10 text-center">
+        <h1 className="text-3xl font-bold text-white mb-2">AI Ebook Generator</h1>
+        <p className="text-zinc-500 text-sm">Loading...</p>
+      </div>
+    </main>
+  );
+}
+
+function HomeContent() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -192,6 +203,14 @@ export default function Home() {
         </div>
       )}
     </main>
+  );
+}
+
+export default function Home() {
+  return (
+    <Suspense fallback={<HomeFallback />}>
+      <HomeContent />
+    </Suspense>
   );
 }
 
