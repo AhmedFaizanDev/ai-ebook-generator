@@ -21,12 +21,12 @@ case "$1" in
     shift
     echo "[entrypoint] Running batch generation..."
     cd /app/apps/api
-    npx tsx src/cli/batch.ts "$@"
+    npx --yes tsx src/cli/batch.ts "$@"
     ;;
 
   batch-status)
     cd /app/apps/api
-    npx tsx src/cli/batch-status.ts
+    npx --yes tsx src/cli/batch-status.ts
     ;;
 
   *)
