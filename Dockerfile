@@ -80,10 +80,10 @@ COPY apps/api/tsconfig.json apps/api/tsconfig.json
 
 RUN mkdir -p /app/apps/api/.sessions
 
-EXPOSE 3000 4000
+EXPOSE 4000
 
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
-CMD ["web"]
+CMD ["api"]
