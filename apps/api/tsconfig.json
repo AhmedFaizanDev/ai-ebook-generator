@@ -13,10 +13,9 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
+    "incremental": true,
     "baseUrl": ".",
-    "paths": {
-      "@/*": ["./src/*"]
-    }
+    "paths": { "@/*": ["./src/*"] }
   },
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist"]

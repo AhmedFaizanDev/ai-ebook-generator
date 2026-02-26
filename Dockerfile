@@ -15,7 +15,8 @@ FROM deps AS build-api
 WORKDIR /app
 COPY apps/api apps/api
 ENV NODE_OPTIONS="--max-old-space-size=1536"
-RUN npm run build:api
+RUN --mount=type=cache,target=/cache/tsbuild \
+    sh -c 'cp /cache/tsbuild/.tsbuildinfo /app/apps/api/ 2>/dev/null || true; npm run build:api; cp /app/apps/api/.tsbuildinfo /cache/tsbuild/ 2>/dev/null || true'
 
 # ── Stage 3: Production image (API + batch CLI only) ───────────────────────────
 FROM node:20-slim AS runner
