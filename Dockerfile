@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.4
 # ── Stage 1: Install dependencies ──────────────────────────────────────────────
 FROM node:20-slim AS deps
 
@@ -5,7 +6,8 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/frontend/package.json apps/frontend/package.json
-RUN npm ci --ignore-scripts
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --ignore-scripts
 
 # ── Stage 2: Build API (backend only; no frontend build) ───────────────────────
 FROM deps AS build-api
@@ -49,7 +51,8 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/frontend/package.json apps/frontend/package.json
-RUN npm ci --omit=dev --ignore-scripts
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --omit=dev --ignore-scripts
 
 # Copy built API
 COPY --from=build-api /app/apps/api/dist apps/api/dist
