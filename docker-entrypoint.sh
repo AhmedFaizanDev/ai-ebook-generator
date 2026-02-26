@@ -8,21 +8,6 @@ case "$1" in
     exec node dist/index.js
     ;;
 
-  web)
-    echo "[entrypoint] Starting API server..."
-    cd /app/apps/api
-    node dist/index.js &
-    API_PID=$!
-
-    echo "[entrypoint] Starting frontend..."
-    cd /app/apps/frontend
-    npx next start -p 3000 &
-    FRONTEND_PID=$!
-
-    trap "kill $API_PID $FRONTEND_PID 2>/dev/null; exit 0" TERM INT
-    wait
-    ;;
-
   batch)
     shift
     echo "[entrypoint] Running batch generation..."

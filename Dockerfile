@@ -7,7 +7,7 @@ COPY apps/api/package.json apps/api/package.json
 COPY apps/frontend/package.json apps/frontend/package.json
 RUN npm ci --ignore-scripts
 
-# ── Stage 2: Build API ────────────────────────────────────────────────────────
+# ── Stage 2: Build API (backend only; no frontend build) ───────────────────────
 FROM deps AS build-api
 
 WORKDIR /app
@@ -15,20 +15,7 @@ COPY apps/api apps/api
 ENV NODE_OPTIONS="--max-old-space-size=1536"
 RUN npm run build:api
 
-# ── Stage 3: Build Frontend ──────────────────────────────────────────────────
-FROM deps AS build-frontend
-
-WORKDIR /app
-COPY apps/frontend apps/frontend
-RUN mkdir -p /app/apps/frontend/public
-
-ARG NEXT_PUBLIC_API_URL=http://localhost:4000
-ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
-ENV NODE_OPTIONS="--max-old-space-size=1536"
-
-RUN npm run build:frontend
-
-# ── Stage 4: Production image ────────────────────────────────────────────────
+# ── Stage 3: Production image (API + batch CLI only) ───────────────────────────
 FROM node:20-slim AS runner
 
 # Puppeteer dependencies
@@ -67,12 +54,6 @@ RUN npm ci --omit=dev --ignore-scripts
 # Copy built API
 COPY --from=build-api /app/apps/api/dist apps/api/dist
 COPY --from=build-api /app/apps/api/package.json apps/api/package.json
-
-# Copy built Frontend
-COPY --from=build-frontend /app/apps/frontend/.next apps/frontend/.next
-COPY --from=build-frontend /app/apps/frontend/public apps/frontend/public
-COPY --from=build-frontend /app/apps/frontend/package.json apps/frontend/package.json
-COPY --from=build-frontend /app/apps/frontend/next.config.mjs apps/frontend/next.config.mjs
 
 # Copy batch CLI source (runs via tsx at runtime)
 COPY apps/api/src apps/api/src
