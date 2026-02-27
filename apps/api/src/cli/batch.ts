@@ -243,13 +243,10 @@ async function processBook(
 // Main
 // ---------------------------------------------------------------------------
 
-async function main(): Promise<void> {
-  const filePath = process.argv[2];
+const DEFAULT_CSV = '/data/batch-sample.csv';
 
-  if (!filePath) {
-    console.error('Usage: npx tsx src/cli/batch.ts <path-to-csv-or-xlsx>');
-    process.exit(1);
-  }
+async function main(): Promise<void> {
+  const filePath = process.argv[2] || DEFAULT_CSV;
 
   const resolved = path.resolve(filePath);
   if (!fs.existsSync(resolved)) {
