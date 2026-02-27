@@ -152,6 +152,15 @@ a {
   font-size: 12pt;
   color: #555;
 }
+.cover-page .author-line {
+  font-size: 12pt;
+  margin-top: 1.5cm;
+  margin-bottom: 0.3cm;
+}
+.cover-page .edition-line {
+  font-size: 12pt;
+  color: #555;
+}
 
 /* --- Copyright page (follows cover) --- */
 .copyright-page {

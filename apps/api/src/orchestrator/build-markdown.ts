@@ -1,5 +1,22 @@
 import { SessionState } from '@/lib/types';
 
+const AUTHORS = [
+  'Dr. M.S. Sadiq Sait, Ph.D',
+  'Andrea Sait, M.Sc. (IT), M.Sc. (AI), M.Sc. (Psy), MBA',
+  'Dr. Suriya Narayana Moorthy, Ph.D',
+  'Dr. Srinath, Ph.D',
+  'Dr. P. Prasanth, MCA, Ph.D',
+  'Dr. M. Ilayaraja, Ph.D',
+];
+
+function pickAuthor(title: string): string {
+  let hash = 0;
+  for (let i = 0; i < title.length; i++) {
+    hash = ((hash << 5) - hash + title.charCodeAt(i)) | 0;
+  }
+  return AUTHORS[Math.abs(hash) % AUTHORS.length];
+}
+
 function slugify(text: string): string {
   return text
     .toLowerCase()
@@ -16,8 +33,13 @@ function escapeTocText(text: string): string {
 }
 
 function buildFrontMatterHtml(title: string): string {
+  const author = pickAuthor(title);
+  const year = new Date().getFullYear();
+
   const cover = `<div class="cover-page">
 <h1>${title}</h1>
+<p class="author-line">Authored by: ${author}</p>
+<p class="edition-line">Edition: ${year}</p>
 </div>`;
 
   const copyright = `<div class="copyright-page">

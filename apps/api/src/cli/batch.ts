@@ -284,10 +284,20 @@ async function main(): Promise<void> {
   }
 
   const progress = loadProgress();
+
+  // Deduplicate the failed list from previous runs
+  progress.failed = [...new Set(progress.failed)];
+  saveProgress(progress);
+
   const alreadyDone = new Set(progress.completed);
   const remaining = titles.filter((t) => !alreadyDone.has(t));
+  const retrying = remaining.filter((t) => progress.failed.includes(t));
 
-  console.log(`[BATCH] Found ${titles.length} title(s). Already completed: ${alreadyDone.size}. Remaining: ${remaining.length}.\n`);
+  console.log(`[BATCH] Found ${titles.length} title(s). Already completed: ${alreadyDone.size}. Remaining: ${remaining.length}.`);
+  if (retrying.length > 0) {
+    console.log(`[BATCH] Retrying ${retrying.length} previously failed title(s).`);
+  }
+  console.log('');
 
   if (remaining.length === 0) {
     console.log('[BATCH] All titles already completed. Nothing to do.');
@@ -313,7 +323,9 @@ async function main(): Promise<void> {
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error(`[BATCH] FAILED: "${title}" — ${errMsg}\n`);
-      progress.failed.push(title);
+      if (!progress.failed.includes(title)) {
+        progress.failed.push(title);
+      }
       saveProgress(progress);
       sessionErrors.push({ title, error: errMsg });
       failCount++;
