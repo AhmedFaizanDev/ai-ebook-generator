@@ -23,6 +23,8 @@ export interface SessionState {
   id: string;
   status: SessionStatus;
   topic: string;
+  /** Optional author for cover; if not set, a random author is chosen from a fixed list. */
+  author?: string;
   model: string;
   phase: string;
   progress: number;

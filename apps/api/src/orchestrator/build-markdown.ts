@@ -32,8 +32,8 @@ function escapeTocText(text: string): string {
     .replace(/"/g, '&quot;');
 }
 
-function buildFrontMatterHtml(title: string): string {
-  const author = pickAuthor(title);
+function buildFrontMatterHtml(title: string, authorOverride?: string): string {
+  const author = authorOverride?.trim() ? authorOverride : pickAuthor(title);
   const year = new Date().getFullYear();
 
   const cover = `<div class="cover-page">
@@ -68,7 +68,7 @@ function assembleParts(session: SessionState, getSubtopic: (u: number, s: number
   const parts: string[] = [];
 
   // 1. Cover + Copyright (raw HTML block)
-  parts.push(buildFrontMatterHtml(structure.title));
+  parts.push(buildFrontMatterHtml(structure.title, session.author));
 
   // 2. Preface (LLM-generated Markdown — placed before TOC, not listed in TOC)
   if (session.prefaceMarkdown) {

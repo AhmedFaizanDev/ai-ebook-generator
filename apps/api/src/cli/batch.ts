@@ -2,7 +2,8 @@
 /**
  * CLI batch generator — run directly via `npx tsx src/cli/batch.ts <file>`
  *
- * Reads book titles from a CSV or XLSX file (column A), then for each title:
+ * Reads book titles from a CSV or XLSX file. Column A = title, column B = optional author (used on cover).
+ * If author is missing, a random author from a fixed list is used. Then for each row:
  *   orchestrate → PDF → DOCX → upload to Google Drive
  *
  * Features:
@@ -78,12 +79,18 @@ function sanitizeFileName(title: string): string {
     .slice(0, 200);
 }
 
-function createBatchSession(topic: string): SessionState {
+interface BatchRow {
+  title: string;
+  author?: string;
+}
+
+function createBatchSession(topic: string, author?: string): SessionState {
   const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
   return {
     id: crypto.randomUUID(),
     status: 'queued',
     topic,
+    author: author?.trim() || undefined,
     model,
     phase: 'init',
     progress: 0,
@@ -144,51 +151,69 @@ function freeSession(session: SessionState): void {
 // File readers
 // ---------------------------------------------------------------------------
 
-async function readTitlesFromExcel(filePath: string): Promise<string[]> {
+/** Strip surrounding double quotes if present (e.g. "faizan" -> faizan). */
+function unquote(value: string): string {
+  const s = value.trim();
+  if (s.length >= 2 && s.startsWith('"') && s.endsWith('"')) {
+    return s.slice(1, -1).trim();
+  }
+  return s;
+}
+
+async function readRowsFromExcel(filePath: string): Promise<BatchRow[]> {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.readFile(filePath);
 
   const sheet = workbook.worksheets[0];
   if (!sheet) throw new Error('Excel file has no worksheets');
 
-  const titles: string[] = [];
+  const rows: BatchRow[] = [];
   sheet.eachRow((row, rowNumber) => {
     if (rowNumber === 1) return;
-    const cellValue = row.getCell(1).value;
-    if (cellValue !== null && cellValue !== undefined) {
-      const title = String(cellValue).trim();
-      if (title.length > 0) titles.push(title);
+    const titleVal = row.getCell(1).value;
+    const authorVal = row.getCell(2).value;
+    if (titleVal !== null && titleVal !== undefined) {
+      const title = unquote(String(titleVal));
+      if (title.length > 0) {
+        const authorRaw =
+          authorVal !== null && authorVal !== undefined ? unquote(String(authorVal)) : '';
+        rows.push({ title, author: authorRaw.length > 0 ? authorRaw : undefined });
+      }
     }
   });
-  return titles;
+  return rows;
 }
 
-function readTitlesFromCsv(filePath: string): string[] {
+function readRowsFromCsv(filePath: string): BatchRow[] {
   const content = fs.readFileSync(filePath, 'utf-8');
-  const rows = parse(content, {
+  const parsed = parse(content, {
     columns: false,
     skip_empty_lines: true,
     trim: true,
     relax_column_count: true,
   }) as string[][];
 
-  const titles: string[] = [];
-  for (let i = 0; i < rows.length; i++) {
-    const firstCol = rows[i]?.[0];
-    if (i === 0 && firstCol && /title|book|topic/i.test(firstCol)) {
+  const rows: BatchRow[] = [];
+  for (let i = 0; i < parsed.length; i++) {
+    const firstCol = parsed[i]?.[0];
+    const secondCol = parsed[i]?.[1];
+    if (i === 0 && firstCol && /title|book|topic/i.test(unquote(String(firstCol)))) {
       continue;
     }
-    if (firstCol && String(firstCol).trim().length > 0) {
-      titles.push(String(firstCol).trim());
+    if (firstCol && unquote(String(firstCol)).length > 0) {
+      const title = unquote(String(firstCol));
+      const authorRaw = secondCol != null ? unquote(String(secondCol)) : '';
+      const author = authorRaw.length > 0 ? authorRaw : undefined;
+      rows.push({ title, author });
     }
   }
-  return titles;
+  return rows;
 }
 
-async function readTitlesFromFile(filePath: string): Promise<string[]> {
+async function readRowsFromFile(filePath: string): Promise<BatchRow[]> {
   const ext = path.extname(filePath).toLowerCase();
-  if (ext === '.csv') return readTitlesFromCsv(filePath);
-  return readTitlesFromExcel(filePath);
+  if (ext === '.csv') return readRowsFromCsv(filePath);
+  return readRowsFromExcel(filePath);
 }
 
 // ---------------------------------------------------------------------------
@@ -199,12 +224,13 @@ async function processBook(
   title: string,
   index: number,
   total: number,
+  author?: string,
 ): Promise<void> {
   const bookStartMs = Date.now();
   const mem = process.memoryUsage();
   console.log(`[BATCH] (${index + 1}/${total}) Generating: "${title}" | heap=${Math.round(mem.heapUsed / 1024 / 1024)}MB`);
 
-  const session = createBatchSession(title);
+  const session = createBatchSession(title, author);
 
   try {
     await orchestrate(session);
@@ -261,25 +287,26 @@ async function main(): Promise<void> {
   }
 
   console.log(`[BATCH] Reading titles from: ${resolved}`);
-  const rawTitles = await readTitlesFromFile(resolved);
+  const rawRows = await readRowsFromFile(resolved);
 
-  if (rawTitles.length === 0) {
+  if (rawRows.length === 0) {
     console.error('[BATCH] No titles found in column A. Exiting.');
     process.exit(1);
   }
 
   const seen = new Set<string>();
-  const titles: string[] = [];
-  for (const t of rawTitles) {
-    const key = t.toLowerCase().trim();
+  const rows: BatchRow[] = [];
+  for (const r of rawRows) {
+    const key = r.title.toLowerCase().trim();
     if (!seen.has(key)) {
       seen.add(key);
-      titles.push(t);
+      rows.push(r);
     } else {
-      console.warn(`[BATCH] Skipping duplicate title: "${t}"`);
+      console.warn(`[BATCH] Skipping duplicate title: "${r.title}"`);
     }
   }
 
+  const titles = rows.map((r) => r.title);
   const progress = loadProgress();
 
   // Deduplicate the failed list from previous runs
@@ -287,16 +314,16 @@ async function main(): Promise<void> {
   saveProgress(progress);
 
   const alreadyDone = new Set(progress.completed);
-  const remaining = titles.filter((t) => !alreadyDone.has(t));
-  const retrying = remaining.filter((t) => progress.failed.includes(t));
+  const remainingRows = rows.filter((r) => !alreadyDone.has(r.title));
+  const retrying = remainingRows.filter((r) => progress.failed.includes(r.title));
 
-  console.log(`[BATCH] Found ${titles.length} title(s). Already completed: ${alreadyDone.size}. Remaining: ${remaining.length}.`);
+  console.log(`[BATCH] Found ${titles.length} title(s). Already completed: ${alreadyDone.size}. Remaining: ${remainingRows.length}.`);
   if (retrying.length > 0) {
     console.log(`[BATCH] Retrying ${retrying.length} previously failed title(s).`);
   }
   console.log('');
 
-  if (remaining.length === 0) {
+  if (remainingRows.length === 0) {
     console.log('[BATCH] All titles already completed. Nothing to do.');
     console.log('[BATCH] To re-run, delete .batch-progress.json and run again.');
     process.exit(0);
@@ -306,29 +333,29 @@ async function main(): Promise<void> {
   let failCount = 0;
   const sessionErrors: Array<{ title: string; error: string }> = [];
 
-  for (let i = 0; i < remaining.length; i++) {
-    const title = remaining[i];
-    const globalIdx = titles.indexOf(title);
+  for (let i = 0; i < remainingRows.length; i++) {
+    const row = remainingRows[i];
+    const globalIdx = titles.indexOf(row.title);
 
     try {
-      await processBook(title, globalIdx, titles.length);
-      progress.completed.push(title);
-      const failedIdx = progress.failed.indexOf(title);
+      await processBook(row.title, globalIdx, titles.length, row.author);
+      progress.completed.push(row.title);
+      const failedIdx = progress.failed.indexOf(row.title);
       if (failedIdx !== -1) progress.failed.splice(failedIdx, 1);
       saveProgress(progress);
       successCount++;
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      console.error(`[BATCH] FAILED: "${title}" — ${errMsg}\n`);
-      if (!progress.failed.includes(title)) {
-        progress.failed.push(title);
+      console.error(`[BATCH] FAILED: "${row.title}" — ${errMsg}\n`);
+      if (!progress.failed.includes(row.title)) {
+        progress.failed.push(row.title);
       }
       saveProgress(progress);
-      sessionErrors.push({ title, error: errMsg });
+      sessionErrors.push({ title: row.title, error: errMsg });
       failCount++;
     }
 
-    if (i < remaining.length - 1) {
+    if (i < remainingRows.length - 1) {
       console.log(`[BATCH] Cooling down ${COOLDOWN_BETWEEN_BOOKS_MS / 1000}s before next book...`);
       await new Promise((r) => setTimeout(r, COOLDOWN_BETWEEN_BOOKS_MS));
 
