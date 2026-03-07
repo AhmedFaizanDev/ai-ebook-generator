@@ -2,8 +2,8 @@
 /**
  * CLI batch generator — run directly via `npx tsx src/cli/batch.ts <file>`
  *
- * Reads book titles from a CSV or XLSX file. Column A = title, column B = optional author (used on cover).
- * If author is missing, a random author from a fixed list is used. Then for each row:
+ * Reads book titles from a CSV or XLSX file. Column A = title, column B = optional author (used on cover),
+ * column C = optional ISBN (shown on copyright page). If author is missing, a random author from a fixed list is used. Then for each row:
  *   orchestrate → PDF → DOCX → upload to Google Drive
  *
  * Features:
@@ -82,15 +82,17 @@ function sanitizeFileName(title: string): string {
 interface BatchRow {
   title: string;
   author?: string;
+  isbn?: string;
 }
 
-function createBatchSession(topic: string, author?: string): SessionState {
+function createBatchSession(topic: string, author?: string, isbn?: string): SessionState {
   const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
   return {
     id: crypto.randomUUID(),
     status: 'queued',
     topic,
     author: author?.trim() || undefined,
+    isbn: isbn?.trim() || undefined,
     model,
     phase: 'init',
     progress: 0,
@@ -172,12 +174,19 @@ async function readRowsFromExcel(filePath: string): Promise<BatchRow[]> {
     if (rowNumber === 1) return;
     const titleVal = row.getCell(1).value;
     const authorVal = row.getCell(2).value;
+    const isbnVal = row.getCell(3).value;
     if (titleVal !== null && titleVal !== undefined) {
       const title = unquote(String(titleVal));
       if (title.length > 0) {
         const authorRaw =
           authorVal !== null && authorVal !== undefined ? unquote(String(authorVal)) : '';
-        rows.push({ title, author: authorRaw.length > 0 ? authorRaw : undefined });
+        const isbnRaw =
+          isbnVal !== null && isbnVal !== undefined ? unquote(String(isbnVal)) : '';
+        rows.push({
+          title,
+          author: authorRaw.length > 0 ? authorRaw : undefined,
+          isbn: isbnRaw.length > 0 ? isbnRaw : undefined,
+        });
       }
     }
   });
@@ -197,14 +206,19 @@ function readRowsFromCsv(filePath: string): BatchRow[] {
   for (let i = 0; i < parsed.length; i++) {
     const firstCol = parsed[i]?.[0];
     const secondCol = parsed[i]?.[1];
+    const thirdCol = parsed[i]?.[2];
     if (i === 0 && firstCol && /title|book|topic/i.test(unquote(String(firstCol)))) {
       continue;
     }
     if (firstCol && unquote(String(firstCol)).length > 0) {
       const title = unquote(String(firstCol));
       const authorRaw = secondCol != null ? unquote(String(secondCol)) : '';
-      const author = authorRaw.length > 0 ? authorRaw : undefined;
-      rows.push({ title, author });
+      const isbnRaw = thirdCol != null ? unquote(String(thirdCol)) : '';
+      rows.push({
+        title,
+        author: authorRaw.length > 0 ? authorRaw : undefined,
+        isbn: isbnRaw.length > 0 ? isbnRaw : undefined,
+      });
     }
   }
   return rows;
@@ -225,12 +239,13 @@ async function processBook(
   index: number,
   total: number,
   author?: string,
+  isbn?: string,
 ): Promise<void> {
   const bookStartMs = Date.now();
   const mem = process.memoryUsage();
   console.log(`[BATCH] (${index + 1}/${total}) Generating: "${title}" | heap=${Math.round(mem.heapUsed / 1024 / 1024)}MB`);
 
-  const session = createBatchSession(title, author);
+  const session = createBatchSession(title, author, isbn);
 
   try {
     await orchestrate(session);
@@ -338,7 +353,7 @@ async function main(): Promise<void> {
     const globalIdx = titles.indexOf(row.title);
 
     try {
-      await processBook(row.title, globalIdx, titles.length, row.author);
+      await processBook(row.title, globalIdx, titles.length, row.author, row.isbn);
       progress.completed.push(row.title);
       const failedIdx = progress.failed.indexOf(row.title);
       if (failedIdx !== -1) progress.failed.splice(failedIdx, 1);

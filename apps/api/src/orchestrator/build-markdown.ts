@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { SessionState } from '@/lib/types';
 
 const AUTHORS = [
@@ -32,26 +34,108 @@ function escapeTocText(text: string): string {
     .replace(/"/g, '&quot;');
 }
 
-function buildFrontMatterHtml(title: string, authorOverride?: string): string {
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function getCloud9LogoDataUrl(): string {
+  const candidates = [
+    path.join(__dirname, '..', 'cloud9_logo.jpeg'),
+    path.join(process.cwd(), 'src', 'cloud9_logo.jpeg'),
+    path.join(process.cwd(), 'cloud9_logo.jpeg'),
+  ];
+  for (const logoPath of candidates) {
+    try {
+      if (fs.existsSync(logoPath)) {
+        const buf = fs.readFileSync(logoPath);
+        return 'data:image/jpeg;base64,' + buf.toString('base64');
+      }
+    } catch {
+      // try next
+    }
+  }
+  return '';
+}
+
+function toTitleCase(s: string): string {
+  return s
+    .trim()
+    .toLowerCase()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** Format ISBN-13 with hyphens per standard (3-1-3-5-1): prefix-group-registrant-publication-check. e.g. 9798893371000 → 979-8-893-37100-0 */
+function formatIsbnWithHyphens(isbn: string): string {
+  const digits = isbn.replace(/[\s-]/g, '');
+  if (digits.length === 13 && /^\d+$/.test(digits)) {
+    return `${digits.slice(0, 3)}-${digits.slice(3, 4)}-${digits.slice(4, 7)}-${digits.slice(7, 12)}-${digits.slice(12)}`;
+  }
+  return isbn.trim();
+}
+
+function buildFrontMatterHtml(title: string, authorOverride?: string, isbn?: string): string {
   const author = authorOverride?.trim() ? authorOverride : pickAuthor(title);
   const year = new Date().getFullYear();
+  const logoDataUrl = getCloud9LogoDataUrl();
+  const displayTitle = toTitleCase(title);
+  const safeTitle = escapeHtml(displayTitle);
+  const safeAuthor = escapeHtml(author);
 
+  const logoImg = logoDataUrl
+    ? `<div class="cover-logo-wrap"><img src="${logoDataUrl}" alt="Cloud Nine Publishing House" class="cover-logo" /></div>`
+    : '';
+
+  // Page 1: Cover — title at top, author in vertical middle, logo at bottom (per reference)
   const cover = `<div class="cover-page">
-<h1>${title}</h1>
-<p class="author-line">Authored by: ${author}</p>
-<p class="edition-line">Edition: ${year}</p>
+<div class="cover-top"><h1>${safeTitle}</h1></div>
+<div class="cover-spacer"></div>
+<p class="author-line">${safeAuthor}</p>
+<div class="cover-spacer"></div>
+${logoImg}
 </div>`;
 
+  const rawIsbn = isbn?.trim() ?? '';
+  const isbnFormatted = rawIsbn ? formatIsbnWithHyphens(rawIsbn) : '';
+  const isbnLine = isbnFormatted ? escapeHtml(isbnFormatted) : '';
+  const catalogBlock =
+    rawIsbn
+      ? `
+<div class="copyright-catalog-box">
+<p class="copyright-catalog-title"><strong>Cataloging in Publication Data</strong></p>
+<p class="copyright-catalog">${safeTitle} / Authored by: ${safeAuthor}</p>
+<p class="copyright-catalog">pages cm</p>
+<p class="copyright-catalog">Contributed articles.</p>
+<p class="copyright-catalog">Includes citation and index.</p>
+<p class="copyright-catalog">ISBN ${escapeHtml(isbnFormatted)}</p>
+</div>`
+      : '';
+
+  // Page 2: Copyright — static text exactly as reference PDF; only variables: year, title, author, ISBN
   const copyright = `<div class="copyright-page">
+<p class="publisher-intro">Published by:</p>
+<p class="publisher-name"><strong>Cloud Nine Publishing House</strong></p>
+<p class="publisher-address">34 Minebrook Road, Edison</p>
+<p class="publisher-address">08820, New jersey usa</p>
 
-<p><strong>All rights reserved.</strong></p>
+<p class="copyright-year">©${year}</p>
+<p class="copyright-all-rights"><strong>All rights reserved.</strong></p>
 
-<p>No part of this publication may be reproduced, distributed, or transmitted in any form or by any means, including photocopying, recording, or other electronic or mechanical methods, without the prior written permission of the publisher, except in the case of brief quotations embodied in critical reviews and certain other noncommercial uses permitted by copyright law.</p>
+<p class="copyright-para">No part of this publication may be reproduced, distributed, or transmitted in any form or by any means, including photocopying, recording, or other electronic or mechanical methods, without the prior written permission of the publisher, except in the case of brief quotations embodied in critical reviews and certain other noncommercial uses permitted by copyright law.</p>
 
-<p><strong>Limits of Liability / Disclaimer of Warranty:</strong> The publisher and the author have used their best efforts in preparing this book. The publisher and author make no representations or warranties with respect to the accuracy or completeness of the contents of this book and specifically disclaim any implied warranties of merchantability or fitness for a particular purpose. The advice and strategies contained herein may not be suitable for every situation. Neither the publisher nor the author shall be liable for any loss of profit or any other commercial damages, including but not limited to special, incidental, consequential, or other damages.</p>
+<p class="copyright-heading"><strong>Limits of Liability / Disclaimer of Warranty:</strong></p>
+<p class="copyright-para">The publisher and the author have used their best efforts in preparing this book. The publisher and author make no representations or warranties with respect to the accuracy or completeness of the contents of this book and specifically disclaim any implied warranties of merchantability or fitness for a particular purpose. The advice and strategies contained herein may not be suitable for every situation. Neither the publisher nor the author shall be liable for any loss of profit or any other commercial damages, including but not limited to special, incidental, consequential, or other damages.</p>
 
-<p><strong>Trademarks:</strong> All brand names and product names used in this book are trademarks, registered trademarks, or trade names of their respective holders.</p>
+<p class="copyright-heading"><strong>Trademarks:</strong></p>
+<p class="copyright-para">All brand names and product names used in this book are trademarks, registered trademarks, or trade names of their respective holders.</p>
 
+<p class="copyright-book-title">${safeTitle}</p>
+<p class="copyright-author">${safeAuthor}</p>
+${isbnLine ? `<p class="copyright-isbn">ISBN: ${isbnLine}</p>` : ''}
+${catalogBlock}
 </div>`;
 
   return cover + '\n' + copyright;
@@ -68,10 +152,11 @@ function assembleParts(session: SessionState, getSubtopic: (u: number, s: number
   const parts: string[] = [];
 
   // 1. Cover + Copyright (raw HTML block)
-  parts.push(buildFrontMatterHtml(structure.title, session.author));
+  parts.push(buildFrontMatterHtml(structure.title, session.author, session.isbn));
 
-  // 2. Preface (LLM-generated Markdown — placed before TOC, not listed in TOC)
+  // 2. Preface (LLM-generated Markdown — starts on a new page, before TOC)
   if (session.prefaceMarkdown) {
+    parts.push('\n\n<div style="page-break-before: always;"></div>\n\n');
     parts.push(session.prefaceMarkdown);
   }
 

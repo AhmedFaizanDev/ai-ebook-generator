@@ -79,6 +79,7 @@ export async function exportPDF(session: SessionState): Promise<void> {
   const pdfOptions = {
     format: 'A4' as const,
     margin: { top: '2cm', bottom: '2.5cm', left: '2cm', right: '2cm' },
+    preferCSSPageSize: true,
     printBackground: true,
     displayHeaderFooter: false,
     timeout: 180_000,

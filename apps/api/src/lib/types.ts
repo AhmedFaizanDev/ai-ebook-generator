@@ -25,6 +25,8 @@ export interface SessionState {
   topic: string;
   /** Optional author for cover; if not set, a random author is chosen from a fixed list. */
   author?: string;
+  /** Optional ISBN from batch upload CSV (column C); shown on copyright page. */
+  isbn?: string;
   model: string;
   phase: string;
   progress: number;
