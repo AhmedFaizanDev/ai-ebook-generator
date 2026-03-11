@@ -389,11 +389,13 @@ async function main(): Promise<void> {
     console.log('[BATCH] Drive folders validated.');
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    const code = err && typeof err === 'object' && 'code' in err ? (err as { code?: number }).code : undefined;
     console.error(`[BATCH] Drive validation failed: ${msg}`);
+    if (code !== undefined) console.error(`[BATCH] API response code: ${code}`);
     if (/invalid_grant|Token has been expired|credentials/i.test(msg)) {
       console.error('[BATCH] Re-run OAuth, update GDRIVE_REFRESH_TOKEN, then restart.');
-    } else if (/File not found|404|not found/i.test(msg)) {
-      console.error('[BATCH] Folder exists in Drive but app cannot see it. Use a refresh token issued with full Drive scope: run OAuth locally (e.g. http://localhost:4000/auth/google), copy the new GDRIVE_REFRESH_TOKEN into this instance .env, then restart.');
+    } else if (/File not found|404|not found/i.test(msg) || code === 404) {
+      console.error('[BATCH] Folder not visible to this token. Fix: (1) Rebuild image so app uses full Drive scope. (2) Run OAuth again (localhost:4000/auth/google or your server URL). (3) Sign in with the Google account that OWNS the folders. (4) Put the NEW refresh token in .env and restart.');
     }
     process.exit(1);
   }

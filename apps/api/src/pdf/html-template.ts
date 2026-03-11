@@ -179,7 +179,7 @@ a {
   object-fit: contain;
 }
 
-/* --- Copyright page — match reference: 3-tier font size, proper vertical spacing --- */
+/* --- Copyright page — full-page layout: content at top, catalog box at bottom, centered --- */
 /* Reference: (1) Headers largest: Published by, ©year, All rights, Limits..., Trademarks, Cataloging title
    (2) Medium: publisher name/address, book title, author, ISBN  (3) Smallest: legal paras, catalog content */
 .copyright-page {
@@ -188,7 +188,16 @@ a {
   font-size: 10pt;
   line-height: 1.4;
   padding-top: 0.6cm;
+  padding-bottom: 0.8cm;
+  padding-left: 0;
+  padding-right: 0;
   text-align: left;
+  display: flex;
+  flex-direction: column;
+  min-height: 24.2cm;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 .copyright-page p {
   text-align: left;
@@ -218,11 +227,11 @@ a {
   padding-left: 0.5em;
   color: #1a1a1a;
 }
-/* © year — Tier 1; significant space above */
+/* © year — Tier 1; more space above to spread content */
 .copyright-page .copyright-year {
   font-size: 11.5pt;
   font-weight: normal;
-  margin: 1.4em 0 0.2em 0;
+  margin: 1.8em 0 0.2em 0;
 }
 /* All rights reserved. — Tier 1 */
 .copyright-page .copyright-all-rights {
@@ -233,27 +242,27 @@ a {
 .copyright-page .copyright-all-rights strong {
   font-weight: normal;
 }
-/* Tier 3 — Disclaimer paragraphs: smallest, justified */
+/* Tier 3 — Disclaimer paragraphs: smallest, justified; more vertical spacing */
 .copyright-page .copyright-para {
   text-align: justify;
-  margin: 0.5em 0;
+  margin: 0.65em 0;
   font-size: 9pt;
   line-height: 1.35;
 }
-/* Section headings — Tier 1, bold; considerable space above */
+/* Section headings — Tier 1, bold; more space above to utilize page */
 .copyright-page .copyright-heading {
-  margin: 1.1em 0 0.25em 0;
+  margin: 1.6em 0 0.25em 0;
   font-size: 11.5pt;
   font-weight: bold;
 }
 .copyright-page .copyright-heading + .copyright-para {
   margin-top: 0.2em;
 }
-/* Book title, author, ISBN — Tier 2 (medium); tight spacing between the three lines; space above block */
+/* Book title, author, ISBN — Tier 2 (medium); more space above block */
 .copyright-page .copyright-book-title {
   font-size: 10.5pt;
   font-weight: normal;
-  margin: 1.2em 0 0.08em 0;
+  margin: 1.8em 0 0.08em 0;
 }
 .copyright-page .copyright-author,
 .copyright-page .copyright-isbn {
@@ -261,14 +270,21 @@ a {
   font-weight: normal;
   margin: 0.06em 0;
 }
-/* Cataloging box — Tier 1 title, Tier 3 content; significant space above box */
+/* Cataloging box — pushed to bottom of page, full width edge-to-edge (left to right margin) */
 .copyright-page .copyright-catalog-box {
   border: 1px solid #000;
   padding: 0.5em 0.7em;
   padding-left: 0.75em;
-  margin: 1.4em auto 0;
-  max-width: 88%;
+  margin-top: auto;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  margin-bottom: 0;
+  width: 100% !important;
+  max-width: none !important;
+  min-width: 100%;
   font-size: 9pt;
+  box-sizing: border-box;
+  display: block;
 }
 .copyright-page .copyright-catalog-title {
   margin: 0 0 0.2em 0;

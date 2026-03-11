@@ -1,6 +1,6 @@
 import { google } from 'googleapis';
 
-const SCOPES = ['https://www.googleapis.com/auth/drive.file'];
+const SCOPES = ['https://www.googleapis.com/auth/drive'];
 
 /** Redirect URI for OAuth (must match GCP Console). Default: http://localhost:4000/auth/callback */
 export function getRedirectUri(): string {

@@ -127,6 +127,8 @@ export async function exportPDF(session: SessionState): Promise<void> {
       }
 
       try {
+        // Lay out at A4 width so full-width elements (e.g. copyright catalog box) span correctly
+        await page.setViewport({ width: 794, height: 1123 }); // A4 at 96dpi
         await page.setContent(wrappedHtml, { waitUntil: 'domcontentloaded', timeout: 180_000 });
         const pdfUint8 = await page.pdf(pdfOptions);
         pdfBuffers.push(Buffer.from(pdfUint8));
