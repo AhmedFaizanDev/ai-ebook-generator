@@ -1,6 +1,6 @@
 # AI Ebook Generator — Architecture & Technical Reference
 
-> Production-grade system for generating ~250-page structured technical ebooks via OpenAI LLM, with a two-phase workflow (Markdown → user approval → PDF/DOCX), Google Drive upload, and bulk CLI generation.
+> Production-grade system for generating ~250-page structured technical ebooks via OpenAI LLM, with a two-phase workflow (Markdown → user approval → PDF/DOCX), cover/copyright pages (Cloud Nine Publishing House, optional author/ISBN from batch CSV), Google Drive upload, and bulk CLI generation with checkpoint/resume and automatic retry rounds for failed books.
 
 ---
 
@@ -41,12 +41,13 @@
 | **PDF Engine**         | Puppeteer (headless Chrome) + pdf-lib (merge & page nums) |
 | **DOCX Engine**        | html-to-docx                                             |
 | **Markdown Renderer**  | Marked v17 + Highlight.js v11                            |
-| **Session Storage**    | In-memory `Map<sessionId, SessionState>` + disk persistence (`.sessions/`) |
+| **Session Storage**    | In-memory `Map<sessionId, SessionState>` + disk persistence (`.sessions/`). Batch: stable session ID per title for checkpoint/resume. |
 | **Concurrency**        | Max 3 concurrent sessions (configurable)                 |
 | **Session TTL**        | 30 minutes (configurable via `SESSION_TTL_MS`)           |
-| **Target Output**      | ~250 pages, ~75,000 words                                |
-| **Drive Upload**       | Google Drive API v3 (OAuth 2.0 offline refresh token)    |
-| **Bulk Generation**    | CLI script — reads CSV/XLSX, generates all, uploads to Drive |
+| **Target Output**      | ~250 pages, ~75,000 words (10 units × 6 subtopics in production) |
+| **LLM timeout**        | 90s per call (configurable via `LLM_CALL_TIMEOUT_MS`); aborts stuck requests |
+| **Drive Upload**       | Google Drive API v3 (OAuth 2.0, full `drive` scope). Folder validation at batch start. |
+| **Bulk Generation**    | CLI: CSV/XLSX (title, author, ISBN). Checkpoint/resume per book; up to 5 retry rounds for failed books; uploads PDF + DOCX to Drive. |
 
 ---
 
@@ -224,12 +225,13 @@ Frontend polls GET /api/progress/poll    ┌────────────
         │  ◄── structure populated ──── │ PHASE 2: Units          │
         │       in poll response         │ Per unit:               │
         │                                │  - Unit Intro (1 call)  │
-        │                                │  - Subtopics (5 calls)  │
-        │                                │  - Micro-summaries (5)  │
+        │                                │  - Subtopics (6 calls)  │
+        │                                │  - Micro-summaries (6)  │
         │                                │  - Unit Summary (1)     │
         │                                │  - End Summary (1)      │
-        │                                │  - Exercises (1)        │
-        │                                │ x 12 units              │
+        │                                │  - Exercises (2 calls: 1–10, 11–20) │
+        │                                │ x 10 units (production) │
+        │                                │ (Resume: skip completed units) │
         │                                └───────┬────────────────┘
         │                                        ▼
         │                                ┌────────────────────────┐
@@ -288,24 +290,24 @@ The orchestrator (`apps/api/src/orchestrator/index.ts`) runs as a single async f
 
 ### Phase 2 — Unit-by-Unit Content Generation
 
-For each of the 12 units (sequential):
+For each of the 10 units (production; sequential). **Resume:** If `isUnitComplete(session, unitIdx)` is true, the unit is skipped (structure, preface, and previous units already persisted).
 
 ```
-for unitIdx 0..11:
+for unitIdx 0..UNIT_COUNT-1:
+  if isUnitComplete(session, unitIdx): skip unit (resume)
   prevUnitSummary = unitSummaries[unitIdx - 1] or null
   prevMicro = null  (subtopic-level chaining)
 
   generateUnitIntro()            → session.unitIntroductions[unitIdx]
 
-  for subtopicIdx 0..4:
+  for subtopicIdx 0..SUBTOPICS_PER_UNIT-1:  (6 in production)
     ┌──────────────────────────────────────┐
     │ 1. generateSubtopic()                │
     │    → inject prevUnitSummary (unit)   │
     │    → inject prevMicro (subtopic)     │
     │    → callLLM (maxTokens: 1800)       │
-    │    → visualValidator checks output   │
-    │    → if no visual: retry with        │
-    │      visual-retry prompt appended    │
+    │    → visualValidator checks for table (no ASCII required) │
+    │    → if no table in subsection: retry with visual-retry prompt │
     │    → store in session.subtopicMd Map │
     ├──────────────────────────────────────┤
     │ 2. generateMicroSummary()            │
@@ -316,16 +318,19 @@ for unitIdx 0..11:
     └──────────────────────────────────────┘
 
   combineUnitSummary()
-    → feed all 5 micro-summaries
+    → feed all 6 micro-summaries (production)
     → callLLM (maxTokens: 150)
     → produce 80–100 word paragraph
     → store in session.unitSummaries[]
 
   generateUnitEndSummary()       → bullet-point takeaways
-  generateUnitExercises()        → MCQs with answers
+  generateUnitExercises()        → 20 MCQs per unit (two LLM calls: 1–10, 11–20); post-process ensures Option A on new line
 
+  saveSession(session)           → checkpoint to disk (batch resume)
   Free micro-summaries (set to null) to save memory
 ```
+
+**On orchestration failure:** Only `status`, `error`, and `finalMarkdown` are updated; structure, unit content, and subtopic markdowns are **not** cleared, so the session file remains a valid checkpoint for resume.
 
 **Subtopic-level summary chaining:** Each subtopic receives the micro-summary of the previous subtopic (50–80 words) as additional context. This improves within-unit cohesion without the cost of injecting full-text context.
 
@@ -334,7 +339,7 @@ for unitIdx 0..11:
 ### Phase 3 — Capstones (Batched)
 
 Both capstones are generated in a single LLM call:
-- Inject all 12 unit summaries as context
+- Inject all unit summaries as context (10 in production)
 - Single call with `maxTokens: 5000`, temperature: 0.35
 - Output split by `---` separator or `## Capstone Project` headings
 - Fallback: if batched output can't be split, retries with per-item calls
@@ -353,9 +358,10 @@ Single LLM call generating APA-formatted references.
 
 ### Phase 7 — Assembly
 
-- `buildFinalMarkdown()` stitches: Cover → Copyright → Preface → TOC → Units (intro + subtopics + summary + exercises) → Capstones → Case Studies → Glossary → Bibliography
+- `buildFinalMarkdown()` stitches: **Cover** (logo, title, author) → **Copyright** (publisher, ©, disclaimers, book title/author/ISBN, cataloging box) → Preface → TOC → Units (intro + subtopics + summary + exercises) → Capstones → Case Studies → Glossary → Bibliography
+- Cover/copyright use optional author and ISBN from session (batch CSV columns B, C). Final markdown is sanitized (junk/control characters removed) and unit exercises get a post-pass so Option A is always on a new line.
 - Session status transitions to `markdown_ready`
-- Intermediate markdown arrays freed from memory
+- **Session arrays (unitMarkdowns, microSummaries, unitSummaries) are not cleared** so checkpoint/resume remains valid
 
 ---
 
@@ -364,29 +370,28 @@ Single LLM call generating APA-formatted references.
 The generated ebook follows an academic textbook format:
 
 ```
-Cover Page (SkillUniversity branding)
-Copyright Page (legal disclaimers)
+Cover Page (Cloud Nine Publishing House logo, book title, optional author)
+Copyright Page (publisher, ©, disclaimers, book title, author, ISBN, cataloging-in-publication box)
 Preface (author's perspective, 300-400 words)
 Table of Contents (auto-generated, linked anchors)
 
 Unit 1: [Title]
   Unit Introduction (context-setting overview)
   1.1 [Subtopic] — 1100-1300 word technical content
-  1.2 [Subtopic]
   ...
-  1.5 [Subtopic]
+  1.6 [Subtopic]   (6 subtopics per unit in production)
   Unit Summary (bullet-point key takeaways)
-  Review Exercises (MCQs with answers)
+  Review Exercises (20 MCQs with answers; bold questions, options on separate lines)
 
 Unit 2: [Title]
   ...
 
-... (12 units total)
+... (10 units total in production)
 
 Capstone Projects (2 comprehensive projects)
 Case Studies (3 real-world scenarios)
 Glossary (alphabetical key terms)
-Bibliography (APA-formatted references)
+Bibliography (APA-formatted references; no Summary subsection)
 ```
 
 ### Hierarchical Numbering (RD Sharma Style)
@@ -401,9 +406,9 @@ Bibliography (APA-formatted references)
 | Section | Generator | Model | Purpose |
 |---------|-----------|-------|---------|
 | Unit Introduction | `generate-unit-intro.ts` | LIGHT_MODEL | Sets context for the unit |
-| Subtopics (5) | `generate-subtopic.ts` | Primary | Core technical content |
+| Subtopics (6) | `generate-subtopic.ts` | Primary | Core technical content (tables for data only; no ASCII diagrams) |
 | Unit End Summary | `generate-unit-end-summary.ts` | LIGHT_MODEL | Bullet-point takeaways |
-| Review Exercises | `generate-unit-exercises.ts` | LIGHT_MODEL | MCQs with answers |
+| Review Exercises | `generate-unit-exercises.ts` | LIGHT_MODEL | 20 MCQs per unit (two calls: 1–10, 11–20); bold questions, newline before Option A |
 
 ---
 
@@ -413,27 +418,27 @@ Bibliography (APA-formatted references)
 |----------------------------|---------------------|-------------|---------------|---------------------------------------------|
 | **Structure generation**   | 1 (+ up to 2 retries)| 1–3        | Primary       | JSON output only                           |
 | **Preface**                | 1                   | 1           | Primary       | 300–400 word intro                         |
-| **Unit introductions**     | 1 per unit          | 12          | LIGHT_MODEL   | Context-setting overview                   |
+| **Unit introductions**     | 1 per unit          | 10          | LIGHT_MODEL   | Context-setting overview                   |
 | **Subtopic generation**    | 1 per subtopic      | 60          | Primary       | + up to 60 visual retries (worst case)     |
-| **Visual retry**           | 0–1 per subtopic    | 0–60        | Primary       | Only triggers if visual validation fails   |
+| **Visual retry**           | 0–1 per subtopic    | 0–60        | Primary       | Only triggers if table validation fails (no ASCII) |
 | **Micro-summary**          | 1 per subtopic      | 60          | LIGHT_MODEL   | Runs after each subtopic; feeds chaining   |
-| **Unit summary combine**   | 1 per unit          | 12          | LIGHT_MODEL   | Combines 5 micro-summaries                 |
-| **Unit end summary**       | 1 per unit          | 12          | LIGHT_MODEL   | Bullet-point takeaways                     |
-| **Unit exercises**         | 1 per unit          | 12          | LIGHT_MODEL   | MCQs per unit                              |
+| **Unit summary combine**   | 1 per unit          | 10          | LIGHT_MODEL   | Combines 6 micro-summaries                 |
+| **Unit end summary**       | 1 per unit          | 10          | LIGHT_MODEL   | Bullet-point takeaways                     |
+| **Unit exercises**         | 2 per unit          | 20          | LIGHT_MODEL   | Questions 1–10 and 11–20 per unit          |
 | **Capstone generation**    | 1 (batched)         | 1           | Primary       | Both capstones in one call                 |
 | **Case study generation**  | 1 (batched)         | 1           | Primary       | All case studies in one call               |
 | **Glossary**               | 1                   | 1           | LIGHT_MODEL   | Alphabetical key terms                     |
 | **Bibliography**           | 1                   | 1           | LIGHT_MODEL   | APA-formatted references                   |
 
-### Total LLM Calls (Production)
+### Total LLM Calls (Production — 10 units, 6 subtopics)
 
 | Scenario               | Call Count  |
 |------------------------|-------------|
-| **Best case** (no visual retries, batched) | **174 calls** |
-| **Worst case** (all visual retries, batch fallback)| **238 calls** |
-| **Typical** (~20% visual retry rate, batched) | **~186 calls** |
+| **Best case** (no visual retries, batched) | **186 calls** (1+1+10+60+60+10+10+20+1+1+1+1) |
+| **Worst case** (all visual retries, batch fallback)| **246 calls** |
+| **Typical** (~20% visual retry rate, batched) | **~198 calls** |
 
-Hard limit: **200 calls** per session (circuit breaker). May need to increase for worst-case visual retry scenarios.
+Hard limit: **200 calls** per session (circuit breaker). Increase in config if needed for worst-case visual retry.
 
 ---
 
@@ -463,17 +468,17 @@ Hard limit: **200 calls** per session (circuit breaker). May need to increase fo
 |--------------------------------|-------|---------------------|-----------------|
 | Structure                      | 1     | ~1,400              | **~1,400**      |
 | Preface                        | 1     | ~650                | **~650**        |
-| Unit intros (12)               | 12    | ~500                | **~6,000**      |
+| Unit intros (10)               | 10    | ~500                | **~5,000**      |
 | Subtopics (60)                 | 60    | ~1,800              | **~108,000**    |
 | Micro-summaries (60)           | 60    | ~450                | **~27,000**     |
-| Unit summary combines (12)     | 12    | ~425                | **~5,100**      |
-| Unit end summaries (12)        | 12    | ~500                | **~6,000**      |
-| Unit exercises (12)            | 12    | ~750                | **~9,000**      |
+| Unit summary combines (10)     | 10    | ~425                | **~4,250**      |
+| Unit end summaries (10)       | 10    | ~500                | **~5,000**      |
+| Unit exercises (20 calls)      | 20    | ~750                | **~15,000**     |
 | Capstones (1 batched call)     | 1     | ~6,250              | **~6,250**      |
 | Case studies (1 batched call)  | 1     | ~6,250              | **~6,250**      |
 | Glossary                       | 1     | ~1,250              | **~1,250**      |
 | Bibliography                   | 1     | ~1,250              | **~1,250**      |
-| **TOTAL**                      | **174** |                   | **~178,150**    |
+| **TOTAL**                      | **186** |                   | **~184,400**    |
 
 ### Hard Limits
 
@@ -503,7 +508,7 @@ Hard limit: **200 calls** per session (circuit breaker). May need to increase fo
 
 | Prompt                     | Used By               | Purpose                                            | Approx Tokens |
 |----------------------------|-----------------------|-----------------------------------------------------|---------------|
-| `SYSTEM_PROMPT`            | Subtopics, micro-summaries, unit summaries, capstones, case studies, etc. | Compressed author persona: structure rules, visual enforcement, length discipline | ~100 |
+| `SYSTEM_PROMPT`            | Subtopics, micro-summaries, unit summaries, capstones, case studies, etc. | Compressed author persona: structure rules, visual enforcement (tables for data only; no ASCII diagrams), length discipline; code blocks for code only (no narrative/theory inside); "Summary" reserved for end-of-unit; subscript for hypotheses (H₀, H₁) | ~100 |
 | `SYSTEM_PROMPT_STRUCTURE`  | Structure generation only | "Output valid JSON only" — minimal, deterministic | ~15 |
 
 ### User Prompt Templates
@@ -523,6 +528,8 @@ Hard limit: **200 calls** per session (circuit breaker). May need to increase fo
 | `buildBatchedCaseStudyPrompt()` | `prompts/case-study.ts`        | Topic, case study titles, all unit summaries             | Batched Markdown      |
 | `buildGlossaryPrompt()`        | `prompts/glossary.ts`          | Topic, structure                                         | Alphabetical glossary |
 | `buildBibliographyPrompt()`    | `prompts/bibliography.ts`      | Topic, structure                                         | APA references        |
+
+**Content and formatting rules (prompts + post-process):** Unit exercises use two calls per unit (1–10, 11–20) via `questionRange`; prompts require bold questions, newline before Option A, exact count. Bibliography/glossary prompts require clean text (no control characters or stray Unicode) and no "Summary" subsection in the Bibliography. Final assembly applies `sanitizeMarkdown()` and `ensureNewlineBeforeOptionA()` where relevant.
 
 ---
 
@@ -566,14 +573,25 @@ Hard limit: **200 calls** per session (circuit breaker). May need to increase fo
 
 ### Session Persistence
 
-Sessions are persisted to disk (`.sessions/*.json`) on every state change. On server restart:
+Sessions are persisted to disk (`.sessions/*.json`) after each phase (structure, preface, each unit, post-units). On server restart:
 - All sessions are rehydrated from disk
 - Any session in `generating` or `queued` status is marked as `failed` with error "Server restarted during generation"
 - Session TTL timer resumes
 
+### Batch checkpoint and resume
+
+- **Stable session ID:** `SHA256(title).slice(0,16)` so the same book always maps to the same session file.
+- **Load or create:** `getOrCreateSessionForBook(title, author, isbn)` calls `loadSessionById(sid)`; if a file exists, that session is used (resume); otherwise a new session is created with the same ID.
+- **Skip completed work:** Orchestrator uses `isStructureComplete`, `isUnitComplete`, `isPostUnitsComplete` and skips structure, preface, completed units, and post-units when resuming.
+- **On failure:** The catch block only sets `status`, `error`, and `finalMarkdown = null`; it does **not** clear structure, unit content, or subtopic markdowns, so the persisted file remains a valid checkpoint.
+- **On success:** After PDF/DOCX upload, `deletePersistedSession(session.id)` removes the session file. `freeSession()` only clears in-memory state and does **not** delete the file (failed books keep their checkpoint for retry).
+- **Disable checkpoints:** Set `BATCH_SAVE_CHECKPOINTS=false` to skip saving and loading session files; every book runs from scratch and no `.sessions/*.json` files are created.
+
 ---
 
 ## 11. PDF Generation Pipeline
+
+The PDF is built from final markdown plus a **cover page** and **copyright page** (HTML from `html-template.ts`): Cloud Nine Publishing House logo, book title, optional author; then copyright block (publisher, year, disclaimers, book title, author, ISBN in 3-1-3-5-1 hyphenated form, cataloging-in-publication box). These are prepended before the rendered body.
 
 ```
 finalMarkdown
@@ -647,11 +665,13 @@ DOCX export is used by the batch CLI. The frontend workflow only produces PDF vi
 
 1. Create a GCP project with Google Drive API enabled
 2. Create OAuth 2.0 credentials (Web application type)
-3. Add `http://localhost:4000/auth/callback` as an authorized redirect URI
+3. Add `http://localhost:4000/auth/callback` (and your production callback URL if different) as authorized redirect URIs
 4. Set `GDRIVE_CLIENT_ID` and `GDRIVE_CLIENT_SECRET` in `.env`
 5. Visit `http://localhost:4000/auth/google` in a browser
-6. Grant Drive access → Google redirects to `/auth/callback`
+6. Grant **full Drive access** (scope `https://www.googleapis.com/auth/drive`) so the app can read/write any folder by ID. Do not use `drive.file` — it only allows access to app-created files.
 7. Copy the displayed refresh token into `GDRIVE_REFRESH_TOKEN` in `.env`
+
+**Batch:** Before processing any book, the CLI validates both folder IDs with `drive.files.get()`. If validation fails (e.g. token expired, wrong scope, or folder not found), the batch exits with a clear error so you can fix OAuth or folder IDs.
 
 ### Upload Flow
 
@@ -679,7 +699,7 @@ uploadDocxToDrive(buffer, filename)
 
 ## 14. Bulk Generation (CLI)
 
-The batch CLI (`apps/api/src/cli/batch.ts`) generates multiple ebooks from a CSV or XLSX file and uploads them to Google Drive.
+The batch CLI (`apps/api/src/cli/batch.ts`) generates multiple ebooks from a CSV or XLSX file and uploads them to Google Drive. It supports checkpoint/resume per book and automatic retry rounds for failed books.
 
 ### Usage
 
@@ -688,51 +708,62 @@ cd apps/api
 npm run batch -- path/to/books.csv
 ```
 
-Or via Docker:
+Or via Docker (CSV in `apps/api` is mounted at `/data`):
 
 ```bash
-docker compose run --rm app batch /data/books.csv
+docker compose up -d
+docker compose exec app /docker-entrypoint.sh batch /data/batch-sample.csv
 ```
 
 ### CSV Format
 
 ```csv
-title
-Advanced Python Programming
-Machine Learning Fundamentals
-Cloud Architecture Patterns
+Title of the Book,Author,ISBN
+Advanced Python Programming,Dr. Jane Smith,979-8-12345-678-9
+Machine Learning Fundamentals,,
 ```
 
-Column A must contain the book title. Headers are optional (auto-detected).
+- **Column A:** Book title (required)
+- **Column B:** Optional author (used on cover and copyright page)
+- **Column C:** Optional ISBN (shown on copyright page; hyphenated format applied if 13 digits)
+
+### Drive validation and progress
+
+- Before processing any book, the CLI validates `GDRIVE_PDF_FOLDER_ID` and `GDRIVE_DOC_FOLDER_ID` (e.g. `drive.files.get({ fileId })`). If validation fails (e.g. invalid token or folder not found), the batch exits with a clear message (re-run OAuth, use full Drive scope).
+- A progress file (e.g. `.batch-progress.json` or `BATCH_PROGRESS_FILE`) records completed and failed titles. On restart, completed titles are skipped (idempotent run).
 
 ### Processing Flow
 
 ```
-Read CSV/XLSX → extract titles from column A
+Read CSV/XLSX → extract title, author, ISBN per row
+Load progress file → alreadyDone = completed set
+remainingRows = rows not in alreadyDone
+Validate Drive folders (fail fast)
       │
       ▼
-For each title (sequential):
-  1. Create batch session (in-memory, no persistence)
-  2. orchestrate(session) — full pipeline
-  3. exportPDF(session) → PDF buffer
-  4. exportDOCX(session) → DOCX buffer
-  5. uploadPdfToDrive(pdfBuffer, "Title.pdf")
-  6. uploadDocxToDrive(docxBuffer, "Title.docx")
-  7. freeSession(session) — always runs (try/finally)
-  8. Log progress
+While remainingRows not empty and round < MAX_RETRY_ROUNDS (default 5):
+  For each row in remainingRows:
+    1. getOrCreateSessionForBook(title, author, isbn) → load from .sessions/<stableId>.json or create new
+    2. Set session.batchIndex, session.batchTotal (for [1/N] logging)
+    3. orchestrate(session) — full pipeline (resume skips completed phases)
+    4. rebuildFinalMarkdown if needed → exportPDF → exportDOCX
+    5. uploadPdfToDrive, uploadDocxToDrive
+    6. deletePersistedSession(session.id)  — remove checkpoint on success
+    7. freeSession(session)  — clear in-memory only (does not delete file)
+    8. Save progress (completed += title), cooldown between books
+  remainingRows = rows not in progress.completed
+  round++; optional cooldown before next round
       │
       ▼
-Print summary: N succeeded, M failed
-Close browser
-Exit with code 0 (all OK) or 1 (any failures)
+Close browser, print summary (completed, still failed), exit code
 ```
 
-### Error Handling
+### Error handling and retries
 
-- Each book is processed in a try/catch — one failure doesn't stop the batch
-- Session memory is always freed via `finally` block
-- Browser is cleaned up on exit
-- Failed books are listed in the summary with error messages
+- Each book is in try/catch — one failure does not stop the batch; the title is appended to `progress.failed` and the session file is left on disk for resume.
+- **Automatic retry rounds:** After a full pass, failed books are retried (up to `BATCH_MAX_RETRY_ROUNDS`, default 5) with optional cooldown (`BATCH_COOLDOWN_BETWEEN_ROUNDS_MS`).
+- LLM calls have a configurable timeout (`LLM_CALL_TIMEOUT_MS`, default 90s); stuck requests are aborted and can be retried by the per-phase retry logic.
+- Drive uploads retry on 5xx/429/connection errors (see [§13](#13-google-drive-integration)).
 
 ---
 
@@ -805,6 +836,11 @@ App (page.tsx)
 
 The `ABORT` keyword in the error message bypasses the retry mechanism to prevent compounding failed calls.
 
+### LLM call timeout
+
+- Each `callLLM()` uses a configurable timeout (`LLM_CALL_TIMEOUT_MS`, default 90s). On timeout the request is aborted (AbortError) and the per-phase retry logic applies.
+- Logs include book index/title when running in batch (`[1/N] [Book Title]`).
+
 ### Retry Logic
 
 | Scope            | Max Retries | Backoff Strategy                     |
@@ -816,6 +852,7 @@ The `ABORT` keyword in the error message bypasses the retry mechanism to prevent
 | All other gens   | 2           | Exponential (2s base)                |
 | Rate limit (429) | Same as above | `Retry-After` header (default 60s) |
 | Server error (5xx)| Same as above | Exponential backoff              |
+| Timeout / Abort  | Same as above | Per-call timeout then retry       |
 
 ### Concurrency Control
 
@@ -842,14 +879,14 @@ Controlled by `DEBUG_MODE=true` in `.env`.
 
 | Config                 | Production (`false`) | Debug (`true`) |
 |------------------------|---------------------|----------------|
-| `UNIT_COUNT`           | 12                  | 1              |
-| `SUBTOPICS_PER_UNIT`   | 5                   | 1              |
-| `TOTAL_SUBTOPICS`      | 60                  | 1              |
+| `UNIT_COUNT`           | 10                  | 1              |
+| `SUBTOPICS_PER_UNIT`   | 6                   | 3              |
+| `TOTAL_SUBTOPICS`      | 60                  | 3              |
 | `CAPSTONE_COUNT`       | 2                   | 1              |
 | `CASE_STUDY_COUNT`     | 3                   | 1              |
 | `MIN_CALL_INTERVAL_MS` | 0                   | 800            |
 
-Debug mode throttles 800ms between LLM calls to avoid rate limits during testing. Generates a minimal ebook with 1 unit, 1 subtopic for rapid pipeline validation.
+Debug mode throttles 800ms between LLM calls to avoid rate limits during testing. Generates a minimal ebook with 1 unit and 3 subtopics for rapid pipeline validation.
 
 ---
 
@@ -868,10 +905,14 @@ Debug mode throttles 800ms between LLM calls to avoid rate limits during testing
 | `PUPPETEER_EXECUTABLE_PATH`| No     | —                | Custom Chrome/Chromium binary path          |
 | `PUPPETEER_DOCKER`        | No       | `false`          | Set to `true` in Docker for `--no-zygote`   |
 | `NEXT_PUBLIC_API_URL`     | No       | `http://localhost:4000` | API URL for frontend proxy (production: set to EC2 IP) |
-| `GDRIVE_CLIENT_ID`        | For batch | —               | Google OAuth client ID                      |
+| `LLM_CALL_TIMEOUT_MS`     | No       | `90000`         | Timeout per LLM call (ms); aborts stuck requests |
+| `BATCH_MAX_RETRY_ROUNDS` | No       | `5`             | Max retry rounds for failed books in same batch run |
+| `BATCH_COOLDOWN_BETWEEN_ROUNDS_MS` | No | `0`        | Cooldown (ms) between retry rounds          |
+| `BATCH_SAVE_CHECKPOINTS`  | No       | `true`         | Set to `false` to disable session checkpoint save/load in batch |
+| `GDRIVE_CLIENT_ID`        | For batch | —               | Google OAuth client ID (use full `drive` scope) |
 | `GDRIVE_CLIENT_SECRET`    | For batch | —               | Google OAuth client secret                  |
 | `GDRIVE_REFRESH_TOKEN`    | For batch | —               | Google OAuth refresh token                  |
-| `GDRIVE_PDF_FOLDER_ID`    | For batch | —               | Google Drive folder ID for PDFs             |
+| `GDRIVE_PDF_FOLDER_ID`    | For batch | —               | Google Drive folder ID for PDFs (validated at batch start) |
 | `GDRIVE_DOC_FOLDER_ID`    | For batch | —               | Google Drive folder ID for DOCXs            |
 
 ### Recommended Models

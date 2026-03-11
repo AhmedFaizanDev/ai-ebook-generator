@@ -26,6 +26,9 @@ export async function generateMicroSummary(
     maxTokens: 100,
     temperature: 0.1,
     callLabel: `micro-summary: ${subtopicTitle}`,
+    bookTitle: session.topic,
+    bookIndex: session.batchIndex,
+    bookTotal: session.batchTotal,
   });
 
   incrementCounters(session, result.totalTokens);

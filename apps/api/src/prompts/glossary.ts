@@ -18,5 +18,5 @@ Requirements:
 4. Definitions must be precise, self-contained, and relevant to "${topic}"
 5. Include foundational terms a reader would need to look up, not obvious common words
 
-Tone: formal, academic. 400–500 words. Do NOT exceed 500 words.`;
+Tone: formal, academic. 400–500 words. Output clean text only — no stray symbols or artifact characters. Do NOT exceed 500 words.`;
 }

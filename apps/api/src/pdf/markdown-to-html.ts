@@ -53,15 +53,6 @@ export function markdownToHtml(markdown: string): string {
           return `<pre><code class="language-${escapeHtml(safeLang)}">${escapeHtml(text)}</code></pre>\n`;
         }
 
-        const isAsciiDiagram =
-          /\+[-+]{3,}\+/.test(text) ||
-          /\[[\w\s]+\]\s*-{1,2}>/.test(text) ||
-          /[│┌└├┤─]/.test(text);
-
-        if (isAsciiDiagram) {
-          return `<pre class="ascii-diagram"><code>${escapeHtml(text)}</code></pre>\n`;
-        }
-
         return `<pre><code class="hljs">${escapeHtml(text)}</code></pre>\n`;
       },
 

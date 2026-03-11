@@ -179,83 +179,105 @@ a {
   object-fit: contain;
 }
 
-/* --- Copyright page (follows cover) — font sizes and layout per reference PDF --- */
+/* --- Copyright page — match reference: 3-tier font size, proper vertical spacing --- */
+/* Reference: (1) Headers largest: Published by, ©year, All rights, Limits..., Trademarks, Cataloging title
+   (2) Medium: publisher name/address, book title, author, ISBN  (3) Smallest: legal paras, catalog content */
 .copyright-page {
   page-break-after: always;
   page-break-inside: avoid;
   font-size: 10pt;
   line-height: 1.4;
-  padding-top: 0.5cm;
+  padding-top: 0.6cm;
   text-align: left;
 }
 .copyright-page p {
   text-align: left;
-  margin: 0.3em 0;
+  margin: 0.2em 0;
 }
+/* Tier 1 — Section headers: slightly larger */
 .copyright-page .publisher-intro {
-  font-size: 10pt;
-  margin: 0 0 0.15em 0;
+  font-size: 11.5pt;
+  font-weight: normal;
+  margin: 0 0 0.5em 0;
 }
+/* Tier 2 — Publisher name and address: medium size; noticeable gap after "Published by:" */
 .copyright-page .publisher-name {
-  font-size: 10pt;
-  font-weight: bold;
-  margin: 0.15em 0;
+  font-size: 10.5pt;
+  font-weight: normal;
+  margin: 0.15em 0 0.08em 0;
+  padding-left: 0.5em;
+}
+.copyright-page .publisher-name strong {
+  font-weight: normal;
 }
 .copyright-page .publisher-address {
-  font-size: 10pt;
+  font-size: 10.5pt;
   font-weight: normal;
-  margin: 0.08em 0;
+  font-style: normal;
+  margin: 0.06em 0;
+  padding-left: 0.5em;
   color: #1a1a1a;
 }
+/* © year — Tier 1; significant space above */
 .copyright-page .copyright-year {
-  font-size: 10pt;
+  font-size: 11.5pt;
   font-weight: normal;
-  margin: 0.8em 0 0.15em 0;
+  margin: 1.4em 0 0.2em 0;
 }
+/* All rights reserved. — Tier 1 */
 .copyright-page .copyright-all-rights {
-  margin: 0 0 0.4em 0;
+  font-size: 11.5pt;
+  font-weight: normal;
+  margin: 0 0 0.5em 0;
 }
+.copyright-page .copyright-all-rights strong {
+  font-weight: normal;
+}
+/* Tier 3 — Disclaimer paragraphs: smallest, justified */
 .copyright-page .copyright-para {
   text-align: justify;
-  margin: 0.35em 0;
-  font-size: 10pt;
+  margin: 0.5em 0;
+  font-size: 9pt;
+  line-height: 1.35;
 }
+/* Section headings — Tier 1, bold; considerable space above */
 .copyright-page .copyright-heading {
-  margin: 0.5em 0 0.2em 0;
-  font-size: 10pt;
+  margin: 1.1em 0 0.25em 0;
+  font-size: 11.5pt;
+  font-weight: bold;
 }
 .copyright-page .copyright-heading + .copyright-para {
   margin-top: 0.2em;
 }
+/* Book title, author, ISBN — Tier 2 (medium); tight spacing between the three lines; space above block */
 .copyright-page .copyright-book-title {
-  font-size: 10pt;
-  font-weight: bold;
-  margin: 0.5em 0 0.15em 0;
-}
-.copyright-page .copyright-author {
-  font-size: 10pt;
+  font-size: 10.5pt;
   font-weight: normal;
-  margin: 0.15em 0;
+  margin: 1.2em 0 0.08em 0;
 }
+.copyright-page .copyright-author,
 .copyright-page .copyright-isbn {
-  font-size: 10pt;
+  font-size: 10.5pt;
   font-weight: normal;
-  margin: 0.15em 0 0 0;
+  margin: 0.06em 0;
 }
+/* Cataloging box — Tier 1 title, Tier 3 content; significant space above box */
 .copyright-page .copyright-catalog-box {
   border: 1px solid #000;
-  padding: 0.45em 0.65em;
-  margin-top: 0.5em;
+  padding: 0.5em 0.7em;
+  padding-left: 0.75em;
+  margin: 1.4em auto 0;
+  max-width: 88%;
   font-size: 9pt;
 }
 .copyright-page .copyright-catalog-title {
-  margin: 0 0 0.3em 0;
-  font-size: 9.5pt;
+  margin: 0 0 0.2em 0;
+  font-size: 11.5pt;
   font-weight: bold;
 }
 .copyright-page .copyright-catalog {
   font-size: 9pt;
-  margin: 0.2em 0;
+  margin: 0.12em 0;
   color: #1a1a1a;
 }
 .copyright-page .copyright-footer {

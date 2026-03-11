@@ -18,6 +18,9 @@ export async function generatePreface(session: SessionState): Promise<string> {
     maxTokens: 900,
     temperature: 0.3,
     callLabel: `preface`,
+    bookTitle: session.topic,
+    bookIndex: session.batchIndex,
+    bookTotal: session.batchTotal,
   });
 
   incrementCounters(session, result.totalTokens);

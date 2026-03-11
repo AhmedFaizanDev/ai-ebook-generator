@@ -27,6 +27,10 @@ export interface SessionState {
   author?: string;
   /** Optional ISBN from batch upload CSV (column C); shown on copyright page. */
   isbn?: string;
+  /** Batch position (1-based) for LLM log prefix, e.g. [1/6]. Set by batch CLI. */
+  batchIndex?: number;
+  /** Batch size for LLM log prefix. Set by batch CLI. */
+  batchTotal?: number;
   model: string;
   phase: string;
   progress: number;

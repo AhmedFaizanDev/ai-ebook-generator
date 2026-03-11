@@ -13,6 +13,7 @@ Requirements:
 2. Each entry must use a consistent citation format: Author(s), "Title," Publisher/Source, Year.
 3. References must be plausible and relevant to "${topic}" — use real, widely-known works in this field where possible
 4. Include a mix of foundational texts, modern references, and official documentation/standards
+5. Do NOT add a "Summary" subsection or any summary paragraph within the Bibliography section — only reference lists under the subsection headings above.
 
-Write 400–600 words total. No preamble. Do NOT exceed 600 words.`;
+Write 400–600 words total. No preamble. Output clean text only: use standard letters, numbers, and punctuation only — no control characters, replacement symbols (�), or stray Unicode. Do NOT exceed 600 words.`;
 }

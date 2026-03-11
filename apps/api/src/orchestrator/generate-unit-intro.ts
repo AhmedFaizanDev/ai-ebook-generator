@@ -26,6 +26,9 @@ export async function generateUnitIntro(
     maxTokens: 600,
     temperature: 0.3,
     callLabel: `unit-intro-${unitIndex + 1}`,
+    bookTitle: session.topic,
+    bookIndex: session.batchIndex,
+    bookTotal: session.batchTotal,
   });
 
   incrementCounters(session, result.totalTokens);

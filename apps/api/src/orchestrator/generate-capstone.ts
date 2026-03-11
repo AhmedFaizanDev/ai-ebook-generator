@@ -31,8 +31,10 @@ export async function generateCapstones(session: SessionState): Promise<string> 
       userPrompt: batchPrompt,
       maxTokens: 5000,
       temperature: 0.35,
-      timeoutMs: 120_000,
       callLabel: `capstones batched (${CAPSTONE_COUNT})`,
+      bookTitle: session.topic,
+      bookIndex: session.batchIndex,
+      bookTotal: session.batchTotal,
     });
 
     incrementCounters(session, batchResult.totalTokens);
@@ -67,6 +69,9 @@ export async function generateCapstones(session: SessionState): Promise<string> 
       maxTokens: 2600,
       temperature: 0.35,
       callLabel: `capstone ${i + 1}`,
+      bookTitle: session.topic,
+      bookIndex: session.batchIndex,
+      bookTotal: session.batchTotal,
     });
 
     incrementCounters(session, result.totalTokens);

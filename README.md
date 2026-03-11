@@ -1,189 +1,92 @@
 # AI Ebook Generator
 
-Generate ~250-page structured technical ebooks using OpenAI, exported as PDF and DOCX.
+Generate structured technical ebooks (~250 pages) with OpenAI, exported as PDF and DOCX. Supports single-book (web UI) and bulk generation from CSV with upload to Google Drive.
+
+## About the project
+
+You give a **topic** (e.g. “Advanced Python Programming”). The app uses an LLM to produce a full textbook-style ebook: **cover and copyright page** (with optional author/ISBN from CSV), **preface**, **table of contents**, **10 units** of content (each with subtopics, summaries, and multiple-choice exercises), **capstone projects**, **case studies**, **glossary**, and **bibliography**. Output is academic in tone, with tables, code blocks, and consistent formatting. You can generate one book from the web UI or run **batch** from a CSV: each row becomes one ebook, exported as PDF and DOCX and uploaded to Google Drive. Batch runs support **checkpointing** (resume after a failure) and **automatic retries** for failed books.
 
 ## Stack
 
-- **Frontend**: Next.js 14 (App Router) — `apps/frontend` on port 3000
-- **Backend**: Express.js + TypeScript — `apps/api` on port 4000
-- **LLM**: OpenAI API (gpt-4o / gpt-4o-mini)
-- **PDF**: Puppeteer + pdf-lib
-- **DOCX**: html-to-docx
-- **Drive**: Google Drive API for bulk upload
-- **Deploy**: Docker + Docker Compose (AWS EC2)
+- **API**: Express + TypeScript (port 4000) — `apps/api`
+- **Frontend**: Next.js (port 3000) — `apps/frontend`
+- **LLM**: OpenAI (gpt-4o-mini). **PDF**: Puppeteer + pdf-lib. **DOCX**: html-to-docx. **Drive**: Google Drive API.
 
-## Quick Start (Local)
+## Quick Start
+
+**Local:**
 
 ```bash
-# Install dependencies (from repo root)
 npm install
-
-# Configure environment
 cp apps/api/.env.example apps/api/.env
-# Edit apps/api/.env with your OpenAI API key
+# Edit apps/api/.env: set OPENAI_API_KEY
 
-# Start backend (Terminal 1)
-cd apps/api
-npm run dev
-
-# Start frontend (Terminal 2)
-cd apps/frontend
-npm run dev
+cd apps/api && npm run dev          # Terminal 1
+cd apps/frontend && npm run dev     # Terminal 2
 ```
 
-Open http://localhost:3000 to generate a single ebook.
+Open http://localhost:3000.
 
-## Quick Start (Docker)
+**Docker:**
 
 ```bash
-# Configure environment
 cp apps/api/.env.example apps/api/.env
-# Edit apps/api/.env with your keys
+# Edit .env with your keys
 
-# Build and start
 docker compose up -d --build
-
-# View logs
-docker compose logs -f
 ```
 
-The app will be available at http://localhost:3000.
+App at http://localhost:3000.
 
-## Bulk Generation (CLI)
+## Bulk Generation (Batch CLI)
 
-Generate multiple ebooks from a CSV file. Each book is exported as PDF + DOCX and uploaded to Google Drive.
+Generate many ebooks from a CSV; each is exported as PDF + DOCX and uploaded to Google Drive.
 
-### Prerequisites
-
-1. A Google Cloud project with Drive API enabled
-2. OAuth 2.0 credentials (Web application type)
-3. A refresh token (run the one-time setup below)
-4. Two Google Drive folders (one for PDFs, one for DOCXs)
-
-### One-Time Google Drive Setup
-
-```bash
-# 1. Set GDRIVE_CLIENT_ID and GDRIVE_CLIENT_SECRET in apps/api/.env
-# 2. Start the API server
-cd apps/api && npm run dev
-
-# 3. Visit http://localhost:4000/auth/google in your browser
-# 4. Grant Drive access
-# 5. Copy the displayed refresh token into GDRIVE_REFRESH_TOKEN in .env
-# 6. Set GDRIVE_PDF_FOLDER_ID and GDRIVE_DOC_FOLDER_ID from your Drive folder URLs
-```
-
-### CSV Format
-
-Create a CSV file with book titles in column A:
+**CSV format** (column A = title, B = optional author, C = optional ISBN):
 
 ```csv
-title
-Advanced Python Programming
-Machine Learning Fundamentals
-Cloud Architecture Patterns
+Title of the Book,Author,ISBN
+Advanced Python Programming,Dr. Jane Smith,979-8-12345-678-9
 ```
 
-### Running Bulk Generation
+**One-time Drive setup:** Set `GDRIVE_CLIENT_ID`, `GDRIVE_CLIENT_SECRET` in `.env`. Start API, open http://localhost:4000/auth/google, grant access, copy the refresh token into `GDRIVE_REFRESH_TOKEN`. Set `GDRIVE_PDF_FOLDER_ID` and `GDRIVE_DOC_FOLDER_ID` to your Drive folder IDs.
 
-**Locally:**
+**Run batch:**
 
 ```bash
+# Local
 cd apps/api
-npm run batch -- path/to/books.csv
+npm run batch -- batch-sample.csv
+
+# Docker (CSV in apps/api is at /data in container)
+docker compose up -d
+docker compose exec app /docker-entrypoint.sh batch /data/batch-sample.csv
+
+# Background on server
+nohup docker compose exec app /docker-entrypoint.sh batch /data/batch-sample.csv > batch.log 2>&1 &
 ```
 
-**Via Docker:**
-
-The repo mounts `./apps/api` into the container at `/data`, so your CSV in `apps/api/` is available at `/data/<filename>.csv`:
-
-```bash
-docker compose run --rm app batch /data/batch-sample.csv
-```
-
-**Via SSH on EC2:**
-
-```bash
-ssh -i your-key.pem ec2-user@your-ec2-ip
-cd ebook-generator/apps/api
-npm run batch -- path/to/books.csv
-```
-
-**Check batch progress**
-
-- **If the backend runs on the host** (e.g. you ran `npm run batch` directly): from the API directory run  
-  `npm run batch-status`
-- **If the backend runs in Docker**: SSH in, then run the status **inside** the running container:
-
-```bash
-docker compose exec app /docker-entrypoint.sh batch-status
-```
-
-(Runs the status script inside the running container where batch progress is stored.)  
-Shows how many ebooks completed, how many failed, and lists the titles.
-
-The CLI will:
-1. Read all titles from the CSV
-2. Generate each book sequentially (full pipeline)
-3. Export PDF and DOCX for each
-4. Upload both files to Google Drive
-5. Print a summary of successes and failures
-
-## AWS Deployment
-
-### Recommended Instance
-
-`t3.medium` or `t3.large` (2–4 vCPU, 4–8 GB RAM).
-
-### Steps
-
-```bash
-# 1. SSH into EC2
-ssh -i your-key.pem ec2-user@your-ec2-ip
-
-# 2. Install Docker + Docker Compose
-sudo yum update -y && sudo yum install -y docker
-sudo systemctl start docker && sudo systemctl enable docker
-sudo usermod -aG docker ec2-user
-sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" \
-  -o /usr/local/bin/docker-compose && sudo chmod +x /usr/local/bin/docker-compose
-
-# 3. Clone and configure
-git clone <your-repo-url> ebook-generator && cd ebook-generator
-cp apps/api/.env.example apps/api/.env
-nano apps/api/.env  # Fill in API keys, Drive credentials
-
-# 4. Update NEXT_PUBLIC_API_URL in docker-compose.yml to http://your-ec2-ip:4000
-
-# 5. Build and run
-docker compose up -d --build
-```
-
-### Security
-
-- Restrict ports 3000/4000 via AWS Security Groups (allow only your IP)
-- For public access, add an ALB or Nginx reverse proxy with HTTPS
-- Never commit `.env` files — use `.env.example` as a template
-- Bulk generation is CLI-only (SSH access required)
+**Check progress:** `npm run batch-status` (local) or `docker compose exec app /docker-entrypoint.sh batch-status` (Docker).
 
 ## Environment
 
-Copy `apps/api/.env.example` or set these in `apps/api/.env`:
+| Variable | Purpose |
+|----------|---------|
+| `OPENAI_API_KEY` | **Required.** OpenAI API key |
+| `OPENAI_MODEL` / `LIGHT_MODEL` | Model (default: gpt-4o-mini) |
+| `DEBUG_MODE` | `true` = 1 unit, 3 subtopics (testing); unset/false = full book |
+| `GDRIVE_CLIENT_ID`, `GDRIVE_CLIENT_SECRET`, `GDRIVE_REFRESH_TOKEN` | For batch Drive upload |
+| `GDRIVE_PDF_FOLDER_ID`, `GDRIVE_DOC_FOLDER_ID` | Drive folder IDs for PDFs and DOCXs |
 
-| Variable | Required | Purpose |
-|----------|----------|---------|
-| `OPENAI_API_KEY` | Yes | OpenAI API key |
-| `OPENAI_MODEL` | No | Primary model (default: `gpt-4o-mini`) |
-| `LIGHT_MODEL` | No | Cheap model for summaries/exercises (default: `gpt-4o-mini`) |
-| `DEBUG_MODE` | No | `true` for minimal output (1 unit, 1 subtopic) |
-| `PORT` | No | API port (default: `4000`) |
-| `NEXT_PUBLIC_API_URL` | No | API URL for frontend (default: `http://localhost:4000`) |
-| `GDRIVE_CLIENT_ID` | For bulk | Google OAuth client ID |
-| `GDRIVE_CLIENT_SECRET` | For bulk | Google OAuth client secret |
-| `GDRIVE_REFRESH_TOKEN` | For bulk | Google OAuth refresh token |
-| `GDRIVE_PDF_FOLDER_ID` | For bulk | Google Drive folder ID for PDFs |
-| `GDRIVE_DOC_FOLDER_ID` | For bulk | Google Drive folder ID for DOCXs |
+See `apps/api/.env.example` for optional vars (timeouts, retry rounds, etc.).
 
-## Architecture
+## Deploy (e.g. AWS)
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full technical reference — orchestration pipeline, token budgets, Docker internals, and generation flow.
+Use an instance with Docker (e.g. t3.medium). Clone repo, set `apps/api/.env`, then:
+
+```bash
+docker compose up -d --build
+# Run batch via SSH as above; restrict ports via Security Groups.
+```
+
+Full technical details: [ARCHITECTURE.md](ARCHITECTURE.md).

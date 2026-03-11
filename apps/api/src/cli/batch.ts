@@ -7,9 +7,12 @@
  *   orchestrate → PDF → DOCX → upload to Google Drive
  *
  * Features:
- *   - Resume support: skips titles already in progress file
- *   - Cooldown between books to avoid rate limits
+ *   - Idempotent job tracking: completed list = skip; existing session file = resume from checkpoint
+ *   - Stable session id per title so the same book always resumes to the same checkpoint
+ *   - Automatic retry rounds: failed books are retried in the same run (up to BATCH_MAX_RETRY_ROUNDS, default 5)
+ *   - Cooldown between books and between retry rounds to avoid rate limits
  *   - Memory cleanup after each book
+ *   - Single-writer: run one batch process per progress file / .sessions dir (e.g. one AWS instance)
  *
  * Usage:
  *   npx tsx src/cli/batch.ts path/to/books.csv
@@ -26,7 +29,9 @@ import { rebuildFinalMarkdown } from '@/orchestrator/build-markdown';
 import { exportPDF } from '@/pdf/generate-pdf';
 import { exportDOCX } from '@/docx/generate-docx';
 import { uploadPdfToDrive, uploadDocxToDrive } from '@/drive/upload';
+import { getDriveClient } from '@/drive/auth';
 import { closeBrowser } from '@/pdf/browser-pool';
+import { loadSessionById, deletePersistedSession } from '@/lib/session-store';
 import type { SessionState } from '@/lib/types';
 
 const SESSIONS_DIR = path.resolve(process.cwd(), '.sessions');
@@ -34,6 +39,10 @@ const PROGRESS_FILE = process.env.BATCH_PROGRESS_FILE
   ? path.resolve(process.env.BATCH_PROGRESS_FILE)
   : path.resolve(process.cwd(), '.batch-progress.json');
 const COOLDOWN_BETWEEN_BOOKS_MS = 5_000;
+/** Max automatic retry rounds for failed books in the same run (set BATCH_MAX_RETRY_ROUNDS to override). */
+const MAX_RETRY_ROUNDS = parseInt(process.env.BATCH_MAX_RETRY_ROUNDS ?? '5', 10);
+/** Cooldown (ms) before starting a retry round (set BATCH_COOLDOWN_BETWEEN_ROUNDS_MS to override). */
+const COOLDOWN_BETWEEN_ROUNDS_MS = parseInt(process.env.BATCH_COOLDOWN_BETWEEN_ROUNDS_MS ?? '30000', 10);
 
 // ---------------------------------------------------------------------------
 // Progress tracking (enables resume after crash)
@@ -79,16 +88,21 @@ function sanitizeFileName(title: string): string {
     .slice(0, 200);
 }
 
+/** Deterministic session id from book title so the same book always gets the same id (for checkpoint/resume). */
+function stableSessionId(title: string): string {
+  return crypto.createHash('sha256').update(title.normalize()).digest('hex').slice(0, 16);
+}
+
 interface BatchRow {
   title: string;
   author?: string;
   isbn?: string;
 }
 
-function createBatchSession(topic: string, author?: string, isbn?: string): SessionState {
+function createBatchSession(topic: string, author?: string, isbn?: string, stableId?: string): SessionState {
   const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
   return {
-    id: crypto.randomUUID(),
+    id: stableId ?? crypto.randomUUID(),
     status: 'queued',
     topic,
     author: author?.trim() || undefined,
@@ -123,6 +137,23 @@ function createBatchSession(topic: string, author?: string, isbn?: string): Sess
   };
 }
 
+/** Get existing session from disk (by stable id) or create new one. Enables resume from checkpoint. */
+function getOrCreateSessionForBook(
+  title: string,
+  author?: string,
+  isbn?: string,
+): { session: SessionState; resumed: boolean } {
+  const sid = stableSessionId(title);
+  const existing = loadSessionById(sid);
+  if (existing) {
+    existing.lastActivityAt = Date.now();
+    return { session: existing, resumed: true };
+  }
+  const session = createBatchSession(title, author, isbn, sid);
+  return { session, resumed: false };
+}
+
+/** Clear in-memory session state to free memory. Does NOT delete the session file — success path calls deletePersistedSession; failed books keep their file for resume. */
 function freeSession(session: SessionState): void {
   session.pdfBuffer = null;
   session.finalMarkdown = null;
@@ -140,13 +171,6 @@ function freeSession(session: SessionState): void {
   session.structure = null;
   session.subtopicMarkdowns.clear();
   session.subtopicVersions.clear();
-
-  try {
-    const fp = path.join(SESSIONS_DIR, `${session.id}.json`);
-    if (fs.existsSync(fp)) fs.unlinkSync(fp);
-  } catch {
-    // ignore cleanup errors
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -245,7 +269,12 @@ async function processBook(
   const mem = process.memoryUsage();
   console.log(`[BATCH] (${index + 1}/${total}) Generating: "${title}" | heap=${Math.round(mem.heapUsed / 1024 / 1024)}MB`);
 
-  const session = createBatchSession(title, author, isbn);
+  const { session, resumed } = getOrCreateSessionForBook(title, author, isbn);
+  session.batchIndex = index + 1;
+  session.batchTotal = total;
+  if (resumed) {
+    console.log(`[BATCH] Resuming from checkpoint for "${title}" (session ${session.id})`);
+  }
 
   try {
     await orchestrate(session);
@@ -272,6 +301,8 @@ async function processBook(
 
     await uploadPdfToDrive(session.pdfBuffer, `${safeName}.pdf`);
     await uploadDocxToDrive(docxBuffer, `${safeName}.docx`);
+
+    deletePersistedSession(session.id);
 
     const elapsed = Math.round((Date.now() - bookStartMs) / 1000);
     console.log(`[BATCH] (${index + 1}/${total}) DONE: "${title}" in ${elapsed}s`);
@@ -329,7 +360,7 @@ async function main(): Promise<void> {
   saveProgress(progress);
 
   const alreadyDone = new Set(progress.completed);
-  const remainingRows = rows.filter((r) => !alreadyDone.has(r.title));
+  let remainingRows = rows.filter((r) => !alreadyDone.has(r.title));
   const retrying = remainingRows.filter((r) => progress.failed.includes(r.title));
 
   console.log(`[BATCH] Found ${titles.length} title(s). Already completed: ${alreadyDone.size}. Remaining: ${remainingRows.length}.`);
@@ -344,71 +375,110 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  let successCount = progress.completed.length;
-  let failCount = 0;
+  // Validate Drive config before processing any book (fail fast)
+  const pdfFolderId = process.env.GDRIVE_PDF_FOLDER_ID;
+  const docFolderId = process.env.GDRIVE_DOC_FOLDER_ID;
+  if (!pdfFolderId || !docFolderId) {
+    console.error('[BATCH] Missing Drive folder IDs. Set GDRIVE_PDF_FOLDER_ID and GDRIVE_DOC_FOLDER_ID in .env');
+    process.exit(1);
+  }
+  try {
+    const drive = getDriveClient();
+    await drive.files.get({ fileId: pdfFolderId, fields: 'id' });
+    await drive.files.get({ fileId: docFolderId, fields: 'id' });
+    console.log('[BATCH] Drive folders validated.');
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[BATCH] Drive validation failed: ${msg}`);
+    if (/invalid_grant|Token has been expired|credentials/i.test(msg)) {
+      console.error('[BATCH] Re-run OAuth, update GDRIVE_REFRESH_TOKEN, then restart.');
+    } else if (/File not found|404|not found/i.test(msg)) {
+      console.error('[BATCH] Folder exists in Drive but app cannot see it. Use a refresh token issued with full Drive scope: run OAuth locally (e.g. http://localhost:4000/auth/google), copy the new GDRIVE_REFRESH_TOKEN into this instance .env, then restart.');
+    }
+    process.exit(1);
+  }
+
   const sessionErrors: Array<{ title: string; error: string }> = [];
+  let round = 0;
 
-  for (let i = 0; i < remainingRows.length; i++) {
-    const row = remainingRows[i];
-    const globalIdx = titles.indexOf(row.title);
-
-    try {
-      await processBook(row.title, globalIdx, titles.length, row.author, row.isbn);
-      progress.completed.push(row.title);
-      const failedIdx = progress.failed.indexOf(row.title);
-      if (failedIdx !== -1) progress.failed.splice(failedIdx, 1);
-      saveProgress(progress);
-      successCount++;
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      console.error(`[BATCH] FAILED: "${row.title}" — ${errMsg}\n`);
-      if (!progress.failed.includes(row.title)) {
-        progress.failed.push(row.title);
-      }
-      saveProgress(progress);
-      sessionErrors.push({ title: row.title, error: errMsg });
-      failCount++;
-    }
-
-    if (i < remainingRows.length - 1) {
-      console.log(`[BATCH] Cooling down ${COOLDOWN_BETWEEN_BOOKS_MS / 1000}s before next book...`);
-      await new Promise((r) => setTimeout(r, COOLDOWN_BETWEEN_BOOKS_MS));
-
-      if (global.gc) {
-        global.gc();
+  while (remainingRows.length > 0 && round < MAX_RETRY_ROUNDS) {
+    if (round > 0) {
+      console.log(`\n[BATCH] === Retry round ${round + 1}/${MAX_RETRY_ROUNDS}: ${remainingRows.length} book(s) still not completed ===\n`);
+      if (COOLDOWN_BETWEEN_ROUNDS_MS > 0) {
+        console.log(`[BATCH] Cooldown ${COOLDOWN_BETWEEN_ROUNDS_MS / 1000}s before retry round...`);
+        await new Promise((r) => setTimeout(r, COOLDOWN_BETWEEN_ROUNDS_MS));
       }
     }
+
+    for (let i = 0; i < remainingRows.length; i++) {
+      const row = remainingRows[i];
+      const globalIdx = titles.indexOf(row.title);
+
+      try {
+        await processBook(row.title, globalIdx, titles.length, row.author, row.isbn);
+        progress.completed.push(row.title);
+        const failedIdx = progress.failed.indexOf(row.title);
+        if (failedIdx !== -1) progress.failed.splice(failedIdx, 1);
+        saveProgress(progress);
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error(`[BATCH] FAILED: "${row.title}" — ${errMsg}\n`);
+        if (!progress.failed.includes(row.title)) {
+          progress.failed.push(row.title);
+        }
+        saveProgress(progress);
+        sessionErrors.push({ title: row.title, error: errMsg });
+      }
+
+      if (i < remainingRows.length - 1) {
+        console.log(`[BATCH] Cooling down ${COOLDOWN_BETWEEN_BOOKS_MS / 1000}s before next book...`);
+        await new Promise((r) => setTimeout(r, COOLDOWN_BETWEEN_BOOKS_MS));
+
+        if (global.gc) {
+          global.gc();
+        }
+      }
+    }
+
+    round++;
+    remainingRows = rows.filter((r) => !progress.completed.includes(r.title));
   }
 
   await closeBrowser().catch(() => {});
+
+  const successCount = progress.completed.length;
+  const stillFailedCount = progress.failed.length;
 
   console.log('\n========================================');
   console.log('             BATCH SUMMARY              ');
   console.log('========================================');
   console.log(`Total in file:   ${titles.length}`);
   console.log(`Completed (all): ${successCount}`);
-  console.log(`Failed (run):    ${failCount}`);
+  console.log(`Still failed:    ${stillFailedCount}`);
   console.log(`Skipped (done):  ${alreadyDone.size}`);
+  if (round > 1) {
+    console.log(`Retry rounds:    ${round} (max ${MAX_RETRY_ROUNDS})`);
+  }
 
   if (sessionErrors.length > 0) {
-    console.log('\nFailed books this run:');
-    for (const e of sessionErrors) {
-      console.log(`  - "${e.title}": ${e.error}`);
+    console.log('\nLast failure per book (may have been retried):');
+    const byTitle = new Map(sessionErrors.map((e) => [e.title, e.error]));
+    for (const [title, error] of byTitle) {
+      console.log(`  - "${title}": ${error}`);
     }
   }
 
   if (progress.failed.length > 0) {
-    console.log('\nAll failed titles (including previous runs):');
+    console.log('\nTitles still not completed (after automatic retries):');
     for (const t of progress.failed) {
       console.log(`  - "${t}"`);
     }
-    console.log('\nTo retry failed titles, remove them from .batch-progress.json "failed" array');
-    console.log('and re-run the command.');
+    console.log('\nRe-run the same batch command to retry these again (or fix .batch-progress.json).');
   }
 
   console.log('========================================\n');
 
-  process.exit(failCount > 0 ? 1 : 0);
+  process.exit(stillFailedCount > 0 ? 1 : 0);
 }
 
 main().catch((err) => {

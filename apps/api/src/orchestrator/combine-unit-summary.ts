@@ -19,6 +19,9 @@ export async function combineUnitSummary(
     maxTokens: 150,
     temperature: 0.15,
     callLabel: `unit-summary: ${unitTitle}`,
+    bookTitle: session.topic,
+    bookIndex: session.batchIndex,
+    bookTotal: session.batchTotal,
   });
 
   incrementCounters(session, result.totalTokens);

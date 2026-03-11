@@ -54,48 +54,93 @@ async function runBatch<T>(tasks: (() => Promise<T>)[], concurrency: number): Pr
   return results;
 }
 
+function isStructureComplete(session: SessionState): boolean {
+  const s = session.structure;
+  if (!s || !s.units || s.units.length < UNIT_COUNT) return false;
+  for (let i = 0; i < UNIT_COUNT; i++) {
+    const u = s.units[i];
+    if (!u || !u.subtopics || u.subtopics.length < SUBTOPICS_PER_UNIT) return false;
+  }
+  return true;
+}
+
+function isUnitComplete(session: SessionState, unitIdx: number): boolean {
+  const unit = session.structure?.units[unitIdx];
+  if (!unit || unit.subtopics.length < SUBTOPICS_PER_UNIT) return false;
+  if (!session.unitIntroductions[unitIdx]) return false;
+  if (session.unitSummaries.length <= unitIdx) return false;
+  if (!session.unitEndSummaries[unitIdx]) return false;
+  if (!session.unitExercises[unitIdx]) return false;
+  for (let s = 0; s < SUBTOPICS_PER_UNIT; s++) {
+    if (!session.subtopicMarkdowns.get(`u${unitIdx}-s${s}`)) return false;
+  }
+  return true;
+}
+
+function isPostUnitsComplete(session: SessionState): boolean {
+  return !!(
+    session.capstonesMarkdown &&
+    session.caseStudiesMarkdown &&
+    session.glossaryMarkdown &&
+    session.bibliographyMarkdown
+  );
+}
+
 export async function orchestrate(session: SessionState): Promise<void> {
   session.status = 'generating';
   touch(session);
   logPhase(session.id, 'orchestrate started', { topic: session.topic });
 
   try {
-    // Phase 1: Structure
-    session.phase = 'structure';
-    logPhase(session.id, 'phase: structure');
-    await throttle();
-    session.structure = await retry(
-      () => generateStructure(session),
-      { max: 3, label: 'structure' }
-    );
-    touch(session);
-    session.progress = 3;
-    checkLimits(session);
-    logPhase(session.id, 'structure done', { callCount: session.callCount, tokenCount: session.tokenCount });
-    saveSession(session);
+    // Phase 1: Structure (skip if already complete for resume)
+    if (!isStructureComplete(session)) {
+      session.phase = 'structure';
+      logPhase(session.id, 'phase: structure');
+      await throttle();
+      session.structure = await retry(
+        () => generateStructure(session),
+        { max: 3, label: 'structure' }
+      );
+      touch(session);
+      session.progress = 3;
+      checkLimits(session);
+      logPhase(session.id, 'structure done', { callCount: session.callCount, tokenCount: session.tokenCount });
+      saveSession(session);
+    } else {
+      logPhase(session.id, 'resume: structure already complete, skipping');
+    }
 
     if (!session.structure || session.structure.units.length < UNIT_COUNT) {
       throw new Error(`Structure invalid: expected ${UNIT_COUNT} units, got ${session.structure?.units.length ?? 0}`);
     }
 
-    // Phase 1b: Preface
-    session.phase = 'preface';
-    logPhase(session.id, 'phase: preface');
-    await throttle();
-    session.prefaceMarkdown = await retry(
-      () => generatePreface(session),
-      { max: 2, label: 'preface' }
-    );
-    touch(session);
-    checkLimits(session);
-    logPhase(session.id, 'preface done');
-    saveSession(session);
+    // Phase 1b: Preface (skip if already present for resume)
+    if (!session.prefaceMarkdown || session.prefaceMarkdown.trim().length === 0) {
+      session.phase = 'preface';
+      logPhase(session.id, 'phase: preface');
+      await throttle();
+      session.prefaceMarkdown = await retry(
+        () => generatePreface(session),
+        { max: 2, label: 'preface' }
+      );
+      touch(session);
+      checkLimits(session);
+      logPhase(session.id, 'preface done');
+      saveSession(session);
+    } else {
+      logPhase(session.id, 'resume: preface already complete, skipping');
+    }
 
-    // Phase 2: Units
+    // Phase 2: Units (skip each unit if already complete for resume)
     for (let unitIdx = 0; unitIdx < UNIT_COUNT; unitIdx++) {
       const unit = session.structure.units[unitIdx];
       if (!unit || unit.subtopics.length < SUBTOPICS_PER_UNIT) {
         throw new Error(`Unit ${unitIdx + 1} invalid: expected ${SUBTOPICS_PER_UNIT} subtopics, got ${unit?.subtopics.length ?? 0}`);
+      }
+
+      if (isUnitComplete(session, unitIdx)) {
+        logPhase(session.id, `resume: unit ${unitIdx + 1}/${UNIT_COUNT} already complete, skipping`);
+        continue;
       }
 
       session.currentUnit = unitIdx + 1;
@@ -233,12 +278,13 @@ export async function orchestrate(session: SessionState): Promise<void> {
       session.microSummaries[unitIdx] = null;
     }
 
-    // Phase 3-6: Capstones + Case Studies + Glossary + Bibliography in parallel
-    session.phase = 'post-units';
-    touch(session);
-    logPhase(session.id, 'phase: capstones + case-studies + glossary + bibliography (parallel)');
+    // Phase 3-6: Capstones + Case Studies + Glossary + Bibliography (skip if already complete for resume)
+    if (!isPostUnitsComplete(session)) {
+      session.phase = 'post-units';
+      touch(session);
+      logPhase(session.id, 'phase: capstones + case-studies + glossary + bibliography (parallel)');
 
-    const [capstones, caseStudies, glossary, bibliography] = await Promise.all([
+      const [capstones, caseStudies, glossary, bibliography] = await Promise.all([
       (async () => {
         await throttle();
         return retry(
@@ -269,17 +315,20 @@ export async function orchestrate(session: SessionState): Promise<void> {
       })(),
     ]);
 
-    session.capstonesMarkdown = capstones;
-    session.caseStudiesMarkdown = caseStudies;
-    session.glossaryMarkdown = glossary;
-    session.bibliographyMarkdown = bibliography;
-    touch(session);
-    session.progress = 96;
-    checkLimits(session);
-    logPhase(session.id, 'post-units done');
-    saveSession(session);
+      session.capstonesMarkdown = capstones;
+      session.caseStudiesMarkdown = caseStudies;
+      session.glossaryMarkdown = glossary;
+      session.bibliographyMarkdown = bibliography;
+      touch(session);
+      session.progress = 96;
+      checkLimits(session);
+      logPhase(session.id, 'post-units done');
+      saveSession(session);
+    } else {
+      logPhase(session.id, 'resume: post-units already complete, skipping');
+    }
 
-    // Phase 7: Assembly
+    // Phase 7: Assembly (always rebuild final markdown so it's up to date)
     session.phase = 'assembly';
     touch(session);
     logPhase(session.id, 'phase: assembly');
@@ -297,17 +346,9 @@ export async function orchestrate(session: SessionState): Promise<void> {
     session.status = 'failed';
     session.error = error instanceof Error ? error.message : String(error);
     session.finalMarkdown = null;
-    session.unitMarkdowns = [];
-    session.microSummaries = [];
-    session.unitSummaries = [];
-    session.prefaceMarkdown = null;
-    session.unitIntroductions = [];
-    session.unitEndSummaries = [];
-    session.unitExercises = [];
-    session.capstonesMarkdown = null;
-    session.caseStudiesMarkdown = null;
-    session.glossaryMarkdown = null;
-    session.bibliographyMarkdown = null;
+    // Do NOT clear structure, unitMarkdowns, microSummaries, unitSummaries, prefaceMarkdown,
+    // unitIntroductions, unitEndSummaries, unitExercises, capstonesMarkdown, caseStudiesMarkdown,
+    // glossaryMarkdown, bibliographyMarkdown, or subtopicMarkdowns — keep checkpoint data so resume can continue from last completed phase.
     saveSession(session);
   }
 }

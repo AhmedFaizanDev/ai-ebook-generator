@@ -112,6 +112,9 @@ async function callAndParse(
     maxTokens: 2000,
     temperature: 0.2,
     callLabel: 'structure',
+    bookTitle: session.topic,
+    bookIndex: session.batchIndex,
+    bookTotal: session.batchTotal,
   });
   incrementCounters(session, result.totalTokens);
   let content = result.content.trim();

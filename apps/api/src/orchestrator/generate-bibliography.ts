@@ -18,6 +18,9 @@ export async function generateBibliography(session: SessionState): Promise<strin
     maxTokens: 1500,
     temperature: 0.3,
     callLabel: `bibliography`,
+    bookTitle: session.topic,
+    bookIndex: session.batchIndex,
+    bookTotal: session.batchTotal,
   });
 
   incrementCounters(session, result.totalTokens);

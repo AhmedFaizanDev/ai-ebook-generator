@@ -2,6 +2,28 @@ import fs from 'fs';
 import path from 'path';
 import { SessionState } from '@/lib/types';
 
+/** Ensure Option A is never on the same line as the question (MCQ formatting). */
+function ensureNewlineBeforeOptionA(md: string): string {
+  if (!md || typeof md !== 'string') return md;
+  return md.replace(/([.?])\s*A\)/g, '$1\n\nA)');
+}
+
+/** Remove common junk/artifact characters from LLM output (e.g. replacement chars, zero-width, encoding errors in bibliographies). */
+function sanitizeMarkdown(md: string): string {
+  if (!md || typeof md !== 'string') return md;
+  return md
+    .replace(/\uFFFD/g, '') // Unicode replacement character
+    .replace(/[\u200B-\u200D\uFEFF\u2060]/g, '') // Zero-width space, ZWJ, BOM, word joiner
+    .replace(/\u00A0/g, ' ') // Non-breaking space -> normal space
+    .replace(/[\u2010-\u2015]/g, '-') // Unicode dashes -> hyphen
+    .replace(/\u2018/g, "'")
+    .replace(/\u2019/g, "'")
+    .replace(/\u201C/g, '"')
+    .replace(/\u201D/g, '"')
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '') // Control characters (common in bibliographies)
+    .trim();
+}
+
 const AUTHORS = [
   'Dr. M.S. Sadiq Sait, Ph.D',
   'Andrea Sait, M.Sc. (IT), M.Sc. (AI), M.Sc. (Psy), MBA',
@@ -210,10 +232,10 @@ function assembleParts(session: SessionState, getSubtopic: (u: number, s: number
       parts.push(endSummary);
     }
 
-    // 4d. Unit Exercises
+    // 4d. Unit Exercises (ensure Option A is on its own line)
     const exercises = session.unitExercises[u];
     if (exercises) {
-      parts.push(exercises);
+      parts.push(ensureNewlineBeforeOptionA(exercises));
     }
   }
 
@@ -232,28 +254,24 @@ function assembleParts(session: SessionState, getSubtopic: (u: number, s: number
     parts.push(session.glossaryMarkdown);
   }
 
-  // 8. Bibliography
+  // 8. Bibliography (sanitize to remove junk/artifact characters common in LLM output)
   if (session.bibliographyMarkdown) {
-    parts.push(session.bibliographyMarkdown);
+    parts.push(sanitizeMarkdown(session.bibliographyMarkdown));
   }
 
   return parts.join('\n\n');
 }
 
 export function buildFinalMarkdown(session: SessionState): string {
-  const result = assembleParts(session, (u, s) => {
+  const raw = assembleParts(session, (u, s) => {
     return session.subtopicMarkdowns.get(`u${u}-s${s}`) ?? null;
   });
-
-  session.unitMarkdowns = [];
-  session.microSummaries = [];
-  session.unitSummaries = [];
-
-  return result;
+  return sanitizeMarkdown(raw);
 }
 
 export function rebuildFinalMarkdown(session: SessionState): string {
-  return assembleParts(session, (u, s) => {
+  const raw = assembleParts(session, (u, s) => {
     return session.subtopicMarkdowns.get(`u${u}-s${s}`) ?? null;
   });
+  return sanitizeMarkdown(raw);
 }

@@ -21,6 +21,9 @@ export async function generateSubtopic(
     maxTokens: 1800,
     temperature: 0.4,
     callLabel: label,
+    bookTitle: session.topic,
+    bookIndex: session.batchIndex,
+    bookTotal: session.batchTotal,
   });
 
   incrementCounters(session, result.totalTokens);
@@ -43,6 +46,9 @@ export async function generateSubtopic(
         maxTokens: 1800,
         temperature: 0.4,
         callLabel: `${label} visual-retry`,
+        bookTitle: session.topic,
+        bookIndex: session.batchIndex,
+        bookTotal: session.batchTotal,
       });
 
       incrementCounters(session, retryResult.totalTokens);

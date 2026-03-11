@@ -18,6 +18,9 @@ export async function generateGlossary(session: SessionState): Promise<string> {
     maxTokens: 800,
     temperature: 0.2,
     callLabel: 'glossary',
+    bookTitle: session.topic,
+    bookIndex: session.batchIndex,
+    bookTotal: session.batchTotal,
   });
 
   incrementCounters(session, result.totalTokens);

@@ -48,6 +48,9 @@ function deserialize(raw: string): SessionState {
     unitIntroductions: Array.isArray(rest.unitIntroductions) ? rest.unitIntroductions : [],
     unitEndSummaries: Array.isArray(rest.unitEndSummaries) ? rest.unitEndSummaries : [],
     unitExercises: Array.isArray(rest.unitExercises) ? rest.unitExercises : [],
+    unitSummaries: Array.isArray(rest.unitSummaries) ? rest.unitSummaries : [],
+    unitMarkdowns: Array.isArray(rest.unitMarkdowns) ? rest.unitMarkdowns : [],
+    microSummaries: Array.isArray(rest.microSummaries) ? rest.microSummaries : [],
     glossaryMarkdown: rest.glossaryMarkdown ?? null,
     subtopicMarkdowns: new Map(subtopicMarkdowns),
     subtopicVersions: new Map(subtopicVersions),
@@ -72,6 +75,23 @@ function removePersisted(id: string): void {
   } catch {
     // ignore cleanup errors
   }
+}
+
+/** Load a session from disk by id (for batch resume). Returns null if file missing or corrupt. */
+export function loadSessionById(id: string): SessionState | null {
+  try {
+    const fp = sessionFilePath(id);
+    if (!fs.existsSync(fp)) return null;
+    const raw = fs.readFileSync(fp, 'utf-8');
+    return deserialize(raw);
+  } catch {
+    return null;
+  }
+}
+
+/** Remove persisted session file for this id (e.g. after batch book completes). */
+export function deletePersistedSession(id: string): void {
+  removePersisted(id);
 }
 
 function loadPersistedSessions(): void {

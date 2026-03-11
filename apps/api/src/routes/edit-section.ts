@@ -223,6 +223,9 @@ export default function registerEditSection(router: Router): void {
         maxTokens: 2200,
         temperature: 0.4,
         callLabel: `edit-section ${action} ${key}`,
+        bookTitle: session.topic,
+        bookIndex: session.batchIndex,
+        bookTotal: session.batchTotal,
       });
 
       incrementCounters(session, result.totalTokens);
