@@ -15,8 +15,9 @@ FROM deps AS build-api
 WORKDIR /app
 COPY apps/api apps/api
 ENV NODE_OPTIONS="--max-old-space-size=1536"
+# Build from apps/api so tsc-alias runs in correct dir and rewrites @/ to relative paths
 RUN --mount=type=cache,target=/cache/tsbuild \
-    sh -c 'cp /cache/tsbuild/.tsbuildinfo /app/apps/api/ 2>/dev/null || true; npm run build:api; cp /app/apps/api/.tsbuildinfo /cache/tsbuild/ 2>/dev/null || true'
+    sh -c 'cp /cache/tsbuild/.tsbuildinfo /app/apps/api/ 2>/dev/null || true; cd /app/apps/api && npx tsc && npx tsc-alias -p tsconfig.json; cp /app/apps/api/.tsbuildinfo /cache/tsbuild/ 2>/dev/null || true'
 
 # ── Stage 3: Production image (API + batch CLI only) ───────────────────────────
 FROM node:20-slim AS runner
