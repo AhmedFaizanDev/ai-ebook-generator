@@ -88,6 +88,9 @@ export async function exportPDF(session: SessionState): Promise<void> {
   const isRetriablePuppeteerError = (msg: string) =>
     msg.includes('Target closed') ||
     msg.includes('Protocol error') ||
+    msg.includes('Protocol error (IO.read)') ||
+    msg.includes('Protocol error (Runtime.callFunctionOn)') ||
+    msg.includes('Protocol error (Page.printToPDF)') ||
     msg.includes('Connection closed') ||
     msg.includes('Navigation timeout') ||
     msg.includes('Session closed');
@@ -129,7 +132,9 @@ export async function exportPDF(session: SessionState): Promise<void> {
       try {
         // Lay out at A4 width so full-width elements (e.g. copyright catalog box) span correctly
         await page.setViewport({ width: 794, height: 1123 }); // A4 at 96dpi
-        await page.setContent(wrappedHtml, { waitUntil: 'domcontentloaded', timeout: 180_000 });
+        await page.setContent(wrappedHtml, { waitUntil: 'load', timeout: 120_000 });
+        // Short delay so images and layout settle before PDF (reduces "Target closed" in Docker)
+        await new Promise((r) => setTimeout(r, 1500));
         const pdfUint8 = await page.pdf(pdfOptions);
         pdfBuffers.push(Buffer.from(pdfUint8));
         await page.close().catch(() => {});
@@ -142,7 +147,7 @@ export async function exportPDF(session: SessionState): Promise<void> {
         const msg = lastErr.message;
         console.error(`[PDF] Chunk ${i + 1} attempt ${attempt + 1} failed: ${msg}`);
         if (attempt < MAX_ATTEMPTS - 1 && isRetriablePuppeteerError(msg)) {
-          console.log('[PDF] Closing dead browser, launching fresh one...');
+          console.log('[PDF] Retriable (Target/Protocol closed) — closing browser, launching fresh one...');
           await closeBrowser();
           await sleep(1500);
           continue;

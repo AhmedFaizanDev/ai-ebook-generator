@@ -27,6 +27,7 @@ import path from 'path';
 import { orchestrate } from '@/orchestrator/index';
 import { rebuildFinalMarkdown } from '@/orchestrator/build-markdown';
 import { exportPDF } from '@/pdf/generate-pdf';
+import { closeBrowser } from '@/pdf/browser-pool';
 import { exportDOCX } from '@/docx/generate-docx';
 import { uploadPdfToDrive, uploadDocxToDrive } from '@/drive/upload';
 import { getDriveClient } from '@/drive/auth';
@@ -306,6 +307,9 @@ async function processBook(
 
     const elapsed = Math.round((Date.now() - bookStartMs) / 1000);
     console.log(`[BATCH] (${index + 1}/${total}) DONE: "${title}" in ${elapsed}s`);
+
+    // Close browser after each book so next book gets a fresh Chromium (reduces "Target closed" in Docker)
+    await closeBrowser();
   } finally {
     freeSession(session);
   }
@@ -430,6 +434,7 @@ async function main(): Promise<void> {
         }
         saveProgress(progress);
         sessionErrors.push({ title: row.title, error: errMsg });
+        await closeBrowser().catch(() => {}); // fresh browser for next book
       }
 
       if (i < remainingRows.length - 1) {

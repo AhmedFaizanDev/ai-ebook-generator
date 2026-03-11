@@ -27,9 +27,14 @@ export async function getBrowser(): Promise<Browser> {
       '--disable-features=TranslateUI',
       '--disable-ipc-flooding-protection',
       '--font-render-hinting=none',
+      '--disable-backgrounding-occluded-windows',
     ];
     if (IS_DOCKER) {
-      args.push('--no-zygote', '--single-process');
+      args.push('--no-zygote');
+      // Avoid --single-process: it often causes "Target closed" / tab crashes during PDF
+      if (process.env.PUPPETEER_SINGLE_PROCESS === 'true') {
+        args.push('--single-process');
+      }
     }
     console.log('[PDF] Launching browser...');
     browser = await puppeteer.launch({
