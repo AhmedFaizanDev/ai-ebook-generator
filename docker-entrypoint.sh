@@ -5,7 +5,7 @@ case "$1" in
   api)
     echo "[entrypoint] Starting API server..."
     cd /app/apps/api
-    exec node dist/index.js
+    exec node -r module-alias/register dist/index.js
     ;;
 
   batch)

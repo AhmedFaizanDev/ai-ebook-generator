@@ -31,7 +31,6 @@ import { closeBrowser } from '@/pdf/browser-pool';
 import { exportDOCX } from '@/docx/generate-docx';
 import { uploadPdfToDrive, uploadDocxToDrive } from '@/drive/upload';
 import { getDriveClient } from '@/drive/auth';
-import { closeBrowser } from '@/pdf/browser-pool';
 import { loadSessionById, deletePersistedSession } from '@/lib/session-store';
 import type { SessionState } from '@/lib/types';
 
