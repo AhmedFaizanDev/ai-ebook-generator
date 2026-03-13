@@ -535,40 +535,44 @@ Hard limit: **200 calls** per session (circuit breaker). Increase in config if n
 
 ## 10. Session Lifecycle & State Machine
 
-```
-                    POST /api/generate
-                          │
-                          ▼
-                     ┌─────────┐
-                     │ queued  │
-                     └────┬────┘
-                          │ orchestrate() starts
-                          ▼
-                   ┌──────────────┐
-            ┌──────│ generating   │──────────────────┐
-            │      └──────┬───────┘                   │
-            │             │ all phases complete        │ error
-            │             ▼                            ▼
-            │      ┌────────────────┐          ┌──────────┐
-            │      │ markdown_ready │          │ failed   │
-            │      └───────┬────────┘          └──────────┘
-            │              │ POST /api/approve
-            │              ▼
-            │      ┌────────────────┐
-            │      │ exporting_pdf  │──────────┐
-            │      └───────┬────────┘          │ error
-            │              │ PDF done          ▼
-            │              ▼              ┌──────────┐
-            │      ┌──────────────┐       │ failed   │
-            │      │ completed    │       └──────────┘
-            │      └───────┬──────┘
-            │              │ GET /api/download
-            │              ▼
-            │      ┌──────────────┐
-            │      │ downloaded   │ → scheduleCleanup(5 min)
-            │      └──────────────┘
-            │
-            └─── TTL sweeper (every 60s) → deleteSession() after 30 min
+```mermaid
+flowchart TD
+    START(["POST /api/generate"])
+
+    queued["queued"]
+    generating["generating"]
+    markdown_ready["markdown_ready"]
+    exporting_pdf["exporting_pdf"]
+    completed["completed"]
+    downloaded["downloaded"]
+    failed["failed"]
+    END(["end"])
+
+    START --> queued
+    queued -->|"orchestrate() starts"| generating
+
+    generating -->|"all 8 phases complete"| markdown_ready
+    generating -->|"error or circuit breaker"| failed
+
+    markdown_ready -->|"POST /api/approve"| exporting_pdf
+    markdown_ready -->|"regenerate / edit / undo"| markdown_ready
+
+    exporting_pdf -->|"PDF merged and page numbers added"| completed
+    exporting_pdf -->|"Puppeteer error after 3 retries"| failed
+
+    completed -->|"GET /api/download"| downloaded
+    downloaded -->|"scheduleCleanup after 5 min"| END
+
+    failed -->|"web: TTL sweeper expires session"| END
+    failed -->|"batch: checkpoint kept for resume"| END
+
+    style queued         fill:#e8f4fd,stroke:#4a90d9
+    style generating     fill:#fff7e6,stroke:#f5a623
+    style markdown_ready fill:#f0fdf4,stroke:#22c55e
+    style exporting_pdf  fill:#fdf4ff,stroke:#a855f7
+    style completed      fill:#f0fdf4,stroke:#16a34a
+    style downloaded     fill:#dcfce7,stroke:#15803d
+    style failed         fill:#fef2f2,stroke:#ef4444
 ```
 
 ### Session Persistence
@@ -593,33 +597,49 @@ Sessions are persisted to disk (`.sessions/*.json`) after each phase (structure,
 
 The PDF is built from final markdown plus a **cover page** and **copyright page** (HTML from `html-template.ts`): Cloud Nine Publishing House logo, book title, optional author; then copyright block (publisher, year, disclaimers, book title, author, ISBN in 3-1-3-5-1 hyphenated form, cataloging-in-publication box). These are prepended before the rendered body.
 
-```
-finalMarkdown
-      │
-      ▼
-markdownToHtml()          ← Marked v17 (GFM) + Highlight.js v11
-      │                       Custom renderer: code blocks, headings, tables
-      ▼
-splitHtmlByH1()           ← Split by <h1> tags into chunks
-      │
-      ▼
-flattenChunks()           ← Further split any chunk > 350KB by <h2>
-      │
-      ▼
-For each chunk:
-  wrapInHtmlTemplate()    ← Full HTML document with CSS + highlight CSS
-  Puppeteer page.setContent() + page.pdf()
-  3 retry attempts with browser re-launch on failure
-  600ms pause between chunks
-      │
-      ▼
-pdf-lib merge             ← Combine all chunk PDFs into one document
-      │
-      ▼
-Page numbering            ← Centered footer, Helvetica 9pt, gray
-      │
-      ▼
-session.pdfBuffer = merged PDF
+```mermaid
+flowchart TB
+    FM["Final Markdown"]
+
+    subgraph Render["Markdown to HTML"]
+        MH["markdownToHtml() via Marked v17 and Highlight.js v11"]
+    end
+
+    subgraph Chunk["Chunking"]
+        SH1["splitHtmlByH1() — split on each h1 tag"]
+        FC["flattenChunks() — split chunks over 350KB by h2"]
+        SH1 --> FC
+    end
+
+    subgraph PuppeteerLoop["Puppeteer Loop — per chunk"]
+        WT["wrapInHtmlTemplate() — full HTML doc with print CSS"]
+        SC["page.setContent()"]
+        PP["page.pdf() — A4 format"]
+        WT --> SC --> PP
+    end
+
+    subgraph Retry["Error Recovery"]
+        RE["retriable: Target closed, Protocol error, Nav timeout"]
+        RB["close browser, sleep 1.5s, relaunch, retry up to 3 times"]
+        RE --> RB
+    end
+
+    subgraph MergeStep["pdf-lib Merge"]
+        MC["combine all chunk PDFs into single document"]
+        PN["add page numbers — centered footer, Helvetica 9pt"]
+        MC --> PN
+    end
+
+    Pool["Browser Pool — singleton with launch mutex"]
+    Output["session.pdfBuffer — GET /api/download or Drive upload"]
+
+    FM --> MH --> SH1
+    FC --> WT
+    PP -->|"600ms pause between chunks"| MC
+    PP -.->|"on error"| RE
+    RB -.->|"fresh browser"| SC
+    PN --> Output
+    Pool -.->|"provides browser instance"| PuppeteerLoop
 ```
 
 ### Browser Pool
@@ -734,29 +754,47 @@ Machine Learning Fundamentals,,
 
 ### Processing Flow
 
+```mermaid
+flowchart TB
+    CSV["CSV or XLSX — Title, Author, ISBN"]
+    PF["Progress file — completed titles set"]
+
+    subgraph Validation["Pre-flight Checks"]
+        VD["validate Drive folders via drive.files.get()"]
+        FE["fail fast on bad token, wrong scope, or folder not found"]
+        VD --> FE
+    end
+
+    subgraph RetryLoop["Retry Loop — max 5 rounds"]
+        FR["filter remaining rows — skip completed titles"]
+
+        subgraph BookLoop["Per-Book Processing"]
+            GS["getOrCreateSessionForBook() — stableId = SHA256(title).slice(0,16)"]
+            OR["orchestrate(session) — skips completed units and phases on resume"]
+            EP["exportPDF() and exportDOCX()"]
+            UP["uploadPdfToDrive() and uploadDocxToDrive()"]
+            DS["deletePersistedSession() — remove checkpoint on success"]
+            SP["save progress, cooldown between books"]
+            GS --> OR --> EP --> UP --> DS --> SP
+        end
+
+        FR --> BookLoop
+        BookLoop -->|"on failure: keep checkpoint, append to failed"| FR
+    end
+
+    BS["print summary — completed and still failed, exit"]
+
+    CSV --> Validation
+    PF -->|"skip already done"| FR
+    Validation --> RetryLoop
+    RetryLoop -->|"no remaining rows or max rounds reached"| BS
 ```
-Read CSV/XLSX → extract title, author, ISBN per row
-Load progress file → alreadyDone = completed set
-remainingRows = rows not in alreadyDone
-Validate Drive folders (fail fast)
-      │
-      ▼
-While remainingRows not empty and round < MAX_RETRY_ROUNDS (default 5):
-  For each row in remainingRows:
-    1. getOrCreateSessionForBook(title, author, isbn) → load from .sessions/<stableId>.json or create new
-    2. Set session.batchIndex, session.batchTotal (for [1/N] logging)
-    3. orchestrate(session) — full pipeline (resume skips completed phases)
-    4. rebuildFinalMarkdown if needed → exportPDF → exportDOCX
-    5. uploadPdfToDrive, uploadDocxToDrive
-    6. deletePersistedSession(session.id)  — remove checkpoint on success
-    7. freeSession(session)  — clear in-memory only (does not delete file)
-    8. Save progress (completed += title), cooldown between books
-  remainingRows = rows not in progress.completed
-  round++; optional cooldown before next round
-      │
-      ▼
-Close browser, print summary (completed, still failed), exit code
-```
+
+### Duplicate prevention
+
+- **Progress file is per-instance** — Each run/instance has its own `BATCH_PROGRESS_FILE`. For multi-instance (e.g. multiple EC2 nodes), use a shared path (S3, NFS) or rely on Drive-level checks.
+- **Drive existence check** — When `BATCH_SKIP_IF_IN_DRIVE=true` (default), the CLI checks if both PDF and DOCX already exist in the target Drive folders before generating. If they exist, the book is skipped and added to `progress.completed`. This prevents duplicates when different instances or runs target the same Drive folders.
+- **Update-if-exists** — When `BATCH_UPDATE_IF_EXISTS=true`, uploads replace existing files instead of creating duplicates (e.g. avoids "Book (1).pdf").
 
 ### Error handling and retries
 
@@ -879,14 +917,14 @@ Controlled by `DEBUG_MODE=true` in `.env`.
 
 | Config                 | Production (`false`) | Debug (`true`) |
 |------------------------|---------------------|----------------|
-| `UNIT_COUNT`           | 10                  | 1              |
-| `SUBTOPICS_PER_UNIT`   | 6                   | 3              |
-| `TOTAL_SUBTOPICS`      | 60                  | 3              |
+| `UNIT_COUNT`           | 10                  | 3              |
+| `SUBTOPICS_PER_UNIT`   | 6                   | 4              |
+| `TOTAL_SUBTOPICS`      | 60                  | 12             |
 | `CAPSTONE_COUNT`       | 2                   | 1              |
 | `CASE_STUDY_COUNT`     | 3                   | 1              |
 | `MIN_CALL_INTERVAL_MS` | 0                   | 800            |
 
-Debug mode throttles 800ms between LLM calls to avoid rate limits during testing. Generates a minimal ebook with 1 unit and 3 subtopics for rapid pipeline validation.
+Debug mode throttles 800ms between LLM calls to avoid rate limits during testing. Generates a minimal ebook with 3 units and 4 subtopics for rapid pipeline validation.
 
 ---
 
@@ -908,6 +946,8 @@ Debug mode throttles 800ms between LLM calls to avoid rate limits during testing
 | `LLM_CALL_TIMEOUT_MS`     | No       | `90000`         | Timeout per LLM call (ms); aborts stuck requests |
 | `BATCH_MAX_RETRY_ROUNDS` | No       | `5`             | Max retry rounds for failed books in same batch run |
 | `BATCH_COOLDOWN_BETWEEN_ROUNDS_MS` | No | `0`        | Cooldown (ms) between retry rounds          |
+| `BATCH_SKIP_IF_IN_DRIVE`  | No       | `true`         | Skip generation if PDF+DOCX already exist in Drive (duplicate prevention) |
+| `BATCH_UPDATE_IF_EXISTS`  | No       | `false`        | When uploading, update existing file instead of creating duplicate |
 | `BATCH_SAVE_CHECKPOINTS`  | No       | `true`         | Set to `false` to disable session checkpoint save/load in batch |
 | `GDRIVE_CLIENT_ID`        | For batch | —               | Google OAuth client ID (use full `drive` scope) |
 | `GDRIVE_CLIENT_SECRET`    | For batch | —               | Google OAuth client secret                  |

@@ -9,9 +9,35 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Check if a file with the given name exists in the Drive folder.
+ * Returns the file ID if found, null otherwise.
+ */
+function escapeDriveQuery(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+export async function fileExistsInDrive(fileName: string, folderId: string): Promise<string | null> {
+  const drive = getDriveClient();
+  const q = `'${folderId}' in parents and name = '${escapeDriveQuery(fileName)}' and trashed = false`;
+  const res = await drive.files.list({
+    q,
+    pageSize: 1,
+    fields: 'files(id)',
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
+  });
+  const files = res.data.files;
+  if (files && files.length > 0 && files[0].id) {
+    return files[0].id;
+  }
+  return null;
+}
+
+/**
  * Upload a file buffer to a specific Google Drive folder.
  * Retries on transient network/server errors.
  * Returns the Drive file ID on success.
+ * If BATCH_UPDATE_IF_EXISTS=true and file already exists, updates it instead of creating a duplicate.
  */
 export async function uploadToDrive(
   fileBuffer: Buffer,
@@ -20,9 +46,26 @@ export async function uploadToDrive(
   mimeType: string,
 ): Promise<string> {
   const drive = getDriveClient();
+  const updateIfExists = process.env.BATCH_UPDATE_IF_EXISTS === 'true';
 
   for (let attempt = 0; attempt <= UPLOAD_MAX_RETRIES; attempt++) {
     try {
+      const existingId = updateIfExists ? await fileExistsInDrive(fileName, folderId) : null;
+
+      if (existingId) {
+        await drive.files.update({
+          fileId: existingId,
+          media: {
+            mimeType,
+            body: Readable.from(fileBuffer),
+          },
+          fields: 'id,name',
+          supportsAllDrives: true,
+        });
+        console.log(`[DRIVE] Updated "${fileName}" in folder ${folderId} (id: ${existingId})`);
+        return existingId;
+      }
+
       const response = await drive.files.create({
         requestBody: {
           name: fileName,
@@ -33,6 +76,7 @@ export async function uploadToDrive(
           body: Readable.from(fileBuffer),
         },
         fields: 'id,name',
+        supportsAllDrives: true,
       });
 
       const fileId = response.data.id;
@@ -59,6 +103,22 @@ export async function uploadToDrive(
   }
 
   throw new Error(`Drive upload failed after ${UPLOAD_MAX_RETRIES + 1} attempts for "${fileName}"`);
+}
+
+/**
+ * Check if both PDF and DOCX for a book already exist in the configured Drive folders.
+ * Used by batch CLI to skip generation when output already exists (duplicate prevention).
+ */
+export async function bookAlreadyInDrive(pdfFileName: string, docxFileName: string): Promise<boolean> {
+  const pdfFolderId = process.env.GDRIVE_PDF_FOLDER_ID;
+  const docFolderId = process.env.GDRIVE_DOC_FOLDER_ID;
+  if (!pdfFolderId || !docFolderId) return false;
+
+  const [pdfExists, docxExists] = await Promise.all([
+    fileExistsInDrive(pdfFileName, pdfFolderId),
+    fileExistsInDrive(docxFileName, docFolderId),
+  ]);
+  return pdfExists !== null && docxExists !== null;
 }
 
 export async function uploadPdfToDrive(

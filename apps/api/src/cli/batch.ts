@@ -29,7 +29,7 @@ import { rebuildFinalMarkdown } from '@/orchestrator/build-markdown';
 import { exportPDF } from '@/pdf/generate-pdf';
 import { closeBrowser } from '@/pdf/browser-pool';
 import { exportDOCX } from '@/docx/generate-docx';
-import { uploadPdfToDrive, uploadDocxToDrive } from '@/drive/upload';
+import { uploadPdfToDrive, uploadDocxToDrive, bookAlreadyInDrive } from '@/drive/upload';
 import { getDriveClient } from '@/drive/auth';
 import { loadSessionById, deletePersistedSession } from '@/lib/session-store';
 import type { SessionState } from '@/lib/types';
@@ -43,6 +43,8 @@ const COOLDOWN_BETWEEN_BOOKS_MS = 5_000;
 const MAX_RETRY_ROUNDS = parseInt(process.env.BATCH_MAX_RETRY_ROUNDS ?? '5', 10);
 /** Cooldown (ms) before starting a retry round (set BATCH_COOLDOWN_BETWEEN_ROUNDS_MS to override). */
 const COOLDOWN_BETWEEN_ROUNDS_MS = parseInt(process.env.BATCH_COOLDOWN_BETWEEN_ROUNDS_MS ?? '30000', 10);
+/** Skip generation if PDF + DOCX already exist in Drive (duplicate prevention). Default: true. */
+const SKIP_IF_IN_DRIVE = process.env.BATCH_SKIP_IF_IN_DRIVE !== 'false';
 
 // ---------------------------------------------------------------------------
 // Progress tracking (enables resume after crash)
@@ -344,14 +346,27 @@ async function main(): Promise<void> {
   }
 
   const seen = new Set<string>();
-  const rows: BatchRow[] = [];
+  let rowsByTitle: BatchRow[] = [];
   for (const r of rawRows) {
     const key = r.title.toLowerCase().trim();
     if (!seen.has(key)) {
       seen.add(key);
-      rows.push(r);
+      rowsByTitle.push(r);
     } else {
       console.warn(`[BATCH] Skipping duplicate title: "${r.title}"`);
+    }
+  }
+
+  // Dedupe by sanitized filename (titles that normalize to same output file)
+  const seenFilename = new Set<string>();
+  const rows: BatchRow[] = [];
+  for (const r of rowsByTitle) {
+    const fn = sanitizeFileName(r.title);
+    if (!seenFilename.has(fn)) {
+      seenFilename.add(fn);
+      rows.push(r);
+    } else {
+      console.warn(`[BATCH] Skipping duplicate filename (maps to same output): "${r.title}"`);
     }
   }
 
@@ -418,6 +433,38 @@ async function main(): Promise<void> {
     for (let i = 0; i < remainingRows.length; i++) {
       const row = remainingRows[i];
       const globalIdx = titles.indexOf(row.title);
+
+      const safeName = sanitizeFileName(row.title);
+      if (!safeName) {
+        console.error(`[BATCH] Skipping (title sanitizes to empty filename): "${row.title}"`);
+        progress.completed.push(row.title);
+        saveProgress(progress);
+        continue;
+      }
+
+      if (SKIP_IF_IN_DRIVE) {
+        const pdfName = `${safeName}.pdf`;
+        const docxName = `${safeName}.docx`;
+        let alreadyInDrive = false;
+        try {
+          alreadyInDrive = await bookAlreadyInDrive(pdfName, docxName);
+        } catch (driveErr) {
+          const errMsg = driveErr instanceof Error ? driveErr.message : String(driveErr);
+          console.error(`[BATCH] Drive check failed for "${row.title}" — ${errMsg}. Adding to failed; re-run after fixing connectivity.`);
+          if (!progress.failed.includes(row.title)) progress.failed.push(row.title);
+          saveProgress(progress);
+          sessionErrors.push({ title: row.title, error: `Drive check failed: ${errMsg}` });
+          continue;
+        }
+        if (alreadyInDrive) {
+          console.log(`[BATCH] (${globalIdx + 1}/${titles.length}) Skipping (already in Drive): "${row.title}"`);
+          progress.completed.push(row.title);
+          const failedIdx = progress.failed.indexOf(row.title);
+          if (failedIdx !== -1) progress.failed.splice(failedIdx, 1);
+          saveProgress(progress);
+          continue;
+        }
+      }
 
       try {
         await processBook(row.title, globalIdx, titles.length, row.author, row.isbn);

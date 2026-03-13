@@ -43,3 +43,12 @@ Checkpoints are stored in:
 - **File per book:** `<stableId>.json`
 
 You can open that folder directly in Explorer or your editor.
+
+---
+
+## Multi-instance and duplicate prevention
+
+**Single source of truth:** Progress file + Drive. The progress file is local to each instance. For multi-instance runs (e.g. multiple EC2 nodes, different Docker hosts):
+
+- **Option A:** Set `BATCH_PROGRESS_FILE` to a shared path (e.g. S3-mounted, NFS) so all instances use the same progress.
+- **Option B:** Rely on Drive-level skip — with `BATCH_SKIP_IF_IN_DRIVE=true` (default), the CLI checks if PDF and DOCX already exist in the target folders before generating. Books already in Drive are skipped even if the local progress file does not list them.
