@@ -4,6 +4,11 @@ import { getDriveClient } from './auth';
 const UPLOAD_MAX_RETRIES = 3;
 const UPLOAD_BASE_DELAY_MS = 3000;
 
+const FOLDER_MIME = 'application/vnd.google-apps.folder';
+
+/** Cache for resolveUploadFolders(domain) to avoid repeated Drive list calls per batch run. */
+const uploadFoldersCache = new Map<string, { pdfFolderId: string; docFolderId: string }>();
+
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -31,6 +36,69 @@ export async function fileExistsInDrive(fileName: string, folderId: string): Pro
     return files[0].id;
   }
   return null;
+}
+
+/**
+ * Find a child folder by name under a parent folder (list children, match by name).
+ * Used for domain-based upload: root → domain → PDF/Doc. No folder creation.
+ */
+export async function getChildFolderByName(parentId: string, folderName: string): Promise<string | null> {
+  const drive = getDriveClient();
+  const q = `'${parentId}' in parents and name = '${escapeDriveQuery(folderName)}' and mimeType = '${FOLDER_MIME}' and trashed = false`;
+  const res = await drive.files.list({
+    q,
+    pageSize: 1,
+    fields: 'files(id)',
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
+  });
+  const files = res.data.files;
+  if (files && files.length > 0 && files[0].id) {
+    return files[0].id;
+  }
+  return null;
+}
+
+/**
+ * Resolve PDF and Doc folder IDs for a given domain (path lookup under GDRIVE_EBOOKS_ROOT_ID).
+ * Structure: root → domain → PDF, root → domain → Doc. No instance level.
+ * Uses cache per domain for the process lifetime to avoid repeated Drive list calls.
+ * Domain is trimmed only so Drive folder names must match CSV exactly (e.g. "Lifestyle", "Comics & Graphic Novels").
+ */
+export async function resolveUploadFolders(domain: string): Promise<{ pdfFolderId: string; docFolderId: string }> {
+  const rootId = process.env.GDRIVE_EBOOKS_ROOT_ID;
+  if (!rootId) {
+    throw new Error('GDRIVE_EBOOKS_ROOT_ID is not set');
+  }
+  const domainName = domain.trim();
+  if (!domainName) {
+    throw new Error('Domain is empty');
+  }
+  const cacheKey = domainName;
+  const cached = uploadFoldersCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+  const domainFolderId = await getChildFolderByName(rootId, domainName);
+  if (!domainFolderId) {
+    throw new Error(`Domain folder "${domainName}" not found under root`);
+  }
+  const pdfFolderId = await getChildFolderByName(domainFolderId, 'PDF');
+  if (!pdfFolderId) {
+    throw new Error(`PDF folder not found under domain "${domainName}"`);
+  }
+  const docFolderId = await getChildFolderByName(domainFolderId, 'Doc');
+  if (!docFolderId) {
+    throw new Error(`Doc folder not found under domain "${domainName}"`);
+  }
+  const result = { pdfFolderId, docFolderId };
+  uploadFoldersCache.set(cacheKey, result);
+  return result;
+}
+
+/** Clear the resolveUploadFolders cache (e.g. between batch runs if needed). */
+export function clearUploadFoldersCache(): void {
+  uploadFoldersCache.clear();
 }
 
 /**
@@ -105,13 +173,23 @@ export async function uploadToDrive(
   throw new Error(`Drive upload failed after ${UPLOAD_MAX_RETRIES + 1} attempts for "${fileName}"`);
 }
 
+export interface UploadFolders {
+  pdfFolderId: string;
+  docFolderId: string;
+}
+
 /**
  * Check if both PDF and DOCX for a book already exist in the configured Drive folders.
  * Used by batch CLI to skip generation when output already exists (duplicate prevention).
+ * If folders is provided (domain-based), use those; else use GDRIVE_PDF_FOLDER_ID / GDRIVE_DOC_FOLDER_ID.
  */
-export async function bookAlreadyInDrive(pdfFileName: string, docxFileName: string): Promise<boolean> {
-  const pdfFolderId = process.env.GDRIVE_PDF_FOLDER_ID;
-  const docFolderId = process.env.GDRIVE_DOC_FOLDER_ID;
+export async function bookAlreadyInDrive(
+  pdfFileName: string,
+  docxFileName: string,
+  folders?: UploadFolders,
+): Promise<boolean> {
+  const pdfFolderId = folders?.pdfFolderId ?? process.env.GDRIVE_PDF_FOLDER_ID;
+  const docFolderId = folders?.docFolderId ?? process.env.GDRIVE_DOC_FOLDER_ID;
   if (!pdfFolderId || !docFolderId) return false;
 
   const [pdfExists, docxExists] = await Promise.all([
@@ -124,26 +202,28 @@ export async function bookAlreadyInDrive(pdfFileName: string, docxFileName: stri
 export async function uploadPdfToDrive(
   pdfBuffer: Buffer,
   fileName: string,
+  folderId?: string,
 ): Promise<string> {
-  const folderId = process.env.GDRIVE_PDF_FOLDER_ID;
-  if (!folderId) {
-    throw new Error('GDRIVE_PDF_FOLDER_ID not set in .env');
+  const id = folderId ?? process.env.GDRIVE_PDF_FOLDER_ID;
+  if (!id) {
+    throw new Error('GDRIVE_PDF_FOLDER_ID not set in .env and no folderId provided');
   }
-  return uploadToDrive(pdfBuffer, fileName, folderId, 'application/pdf');
+  return uploadToDrive(pdfBuffer, fileName, id, 'application/pdf');
 }
 
 export async function uploadDocxToDrive(
   docxBuffer: Buffer,
   fileName: string,
+  folderId?: string,
 ): Promise<string> {
-  const folderId = process.env.GDRIVE_DOC_FOLDER_ID;
-  if (!folderId) {
-    throw new Error('GDRIVE_DOC_FOLDER_ID not set in .env');
+  const id = folderId ?? process.env.GDRIVE_DOC_FOLDER_ID;
+  if (!id) {
+    throw new Error('GDRIVE_DOC_FOLDER_ID not set in .env and no folderId provided');
   }
   return uploadToDrive(
     docxBuffer,
     fileName,
-    folderId,
+    id,
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   );
 }

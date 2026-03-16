@@ -122,21 +122,20 @@ ${logoImg}
 
   const rawIsbn = isbn?.trim() ?? '';
   const isbnFormatted = rawIsbn ? formatIsbnWithHyphens(rawIsbn) : '';
-  const isbnLine = isbnFormatted ? escapeHtml(isbnFormatted) : '';
-  const catalogBlock =
-    rawIsbn
-      ? `
+  const isbnDisplay = isbnFormatted ? escapeHtml(isbnFormatted) : '&nbsp;';
+
+  // Catalog block always shown; ISBN line shows number or blank space when missing
+  const catalogBlock = `
 <div class="copyright-catalog-box">
 <p class="copyright-catalog-title"><strong>Cataloging in Publication Data</strong></p>
 <p class="copyright-catalog">${safeTitle} / Authored by: ${safeAuthor}</p>
 <p class="copyright-catalog">pages cm</p>
 <p class="copyright-catalog">Contributed articles.</p>
 <p class="copyright-catalog">Includes citation and index.</p>
-<p class="copyright-catalog">ISBN ${escapeHtml(isbnFormatted)}</p>
-</div>`
-      : '';
+<p class="copyright-catalog">ISBN ${isbnDisplay}</p>
+</div>`;
 
-  // Page 2: Copyright — static text exactly as reference PDF; only variables: year, title, author, ISBN
+  // Page 2: Copyright — static text; ISBN line always shown (blank space when not provided)
   const copyright = `<div class="copyright-page">
 <p class="publisher-intro">Published by:</p>
 <p class="publisher-name"><strong>Cloud Nine Publishing House</strong></p>
@@ -156,7 +155,7 @@ ${logoImg}
 
 <p class="copyright-book-title">${safeTitle}</p>
 <p class="copyright-author">${safeAuthor}</p>
-${isbnLine ? `<p class="copyright-isbn">ISBN: ${isbnLine}</p>` : ''}
+<p class="copyright-isbn">ISBN: ${isbnDisplay}</p>
 ${catalogBlock}
 </div>`;
 

@@ -29,7 +29,13 @@ import { rebuildFinalMarkdown } from '@/orchestrator/build-markdown';
 import { exportPDF } from '@/pdf/generate-pdf';
 import { closeBrowser } from '@/pdf/browser-pool';
 import { exportDOCX } from '@/docx/generate-docx';
-import { uploadPdfToDrive, uploadDocxToDrive, bookAlreadyInDrive } from '@/drive/upload';
+import {
+  uploadPdfToDrive,
+  uploadDocxToDrive,
+  bookAlreadyInDrive,
+  resolveUploadFolders,
+  type UploadFolders,
+} from '@/drive/upload';
 import { getDriveClient } from '@/drive/auth';
 import { loadSessionById, deletePersistedSession } from '@/lib/session-store';
 import type { SessionState } from '@/lib/types';
@@ -99,6 +105,7 @@ interface BatchRow {
   title: string;
   author?: string;
   isbn?: string;
+  domain?: string;
 }
 
 function createBatchSession(topic: string, author?: string, isbn?: string, stableId?: string): SessionState {
@@ -201,6 +208,7 @@ async function readRowsFromExcel(filePath: string): Promise<BatchRow[]> {
     const titleVal = row.getCell(1).value;
     const authorVal = row.getCell(2).value;
     const isbnVal = row.getCell(3).value;
+    const domainVal = row.getCell(4).value;
     if (titleVal !== null && titleVal !== undefined) {
       const title = unquote(String(titleVal));
       if (title.length > 0) {
@@ -208,10 +216,13 @@ async function readRowsFromExcel(filePath: string): Promise<BatchRow[]> {
           authorVal !== null && authorVal !== undefined ? unquote(String(authorVal)) : '';
         const isbnRaw =
           isbnVal !== null && isbnVal !== undefined ? unquote(String(isbnVal)) : '';
+        const domainRaw =
+          domainVal !== null && domainVal !== undefined ? unquote(String(domainVal)) : '';
         rows.push({
           title,
           author: authorRaw.length > 0 ? authorRaw : undefined,
           isbn: isbnRaw.length > 0 ? isbnRaw : undefined,
+          domain: domainRaw.length > 0 ? domainRaw : undefined,
         });
       }
     }
@@ -219,33 +230,41 @@ async function readRowsFromExcel(filePath: string): Promise<BatchRow[]> {
   return rows;
 }
 
+/** Get string value from a record by header name (case-insensitive). */
+function getCol(record: Record<string, string>, ...names: string[]): string {
+  const keys = Object.keys(record);
+  for (const name of names) {
+    const k = keys.find((key) => key.trim().toLowerCase() === name.toLowerCase());
+    if (k != null && record[k] != null) return unquote(String(record[k]).trim());
+  }
+  return '';
+}
+
 function readRowsFromCsv(filePath: string): BatchRow[] {
   const content = fs.readFileSync(filePath, 'utf-8');
   const parsed = parse(content, {
-    columns: false,
+    columns: true,
     skip_empty_lines: true,
     trim: true,
     relax_column_count: true,
-  }) as string[][];
+    relax_quotes: true,
+  }) as Record<string, string>[];
 
   const rows: BatchRow[] = [];
   for (let i = 0; i < parsed.length; i++) {
-    const firstCol = parsed[i]?.[0];
-    const secondCol = parsed[i]?.[1];
-    const thirdCol = parsed[i]?.[2];
-    if (i === 0 && firstCol && /title|book|topic/i.test(unquote(String(firstCol)))) {
-      continue;
-    }
-    if (firstCol && unquote(String(firstCol)).length > 0) {
-      const title = unquote(String(firstCol));
-      const authorRaw = secondCol != null ? unquote(String(secondCol)) : '';
-      const isbnRaw = thirdCol != null ? unquote(String(thirdCol)) : '';
-      rows.push({
-        title,
-        author: authorRaw.length > 0 ? authorRaw : undefined,
-        isbn: isbnRaw.length > 0 ? isbnRaw : undefined,
-      });
-    }
+    const record = parsed[i];
+    if (!record || typeof record !== 'object') continue;
+    const title = getCol(record, 'title', 'book', 'topic');
+    if (!title) continue;
+    const authorRaw = getCol(record, 'author');
+    const isbnRaw = getCol(record, 'isbn');
+    const domainRaw = getCol(record, 'domain', 'folder');
+    rows.push({
+      title,
+      author: authorRaw.length > 0 ? authorRaw : undefined,
+      isbn: isbnRaw.length > 0 ? isbnRaw : undefined,
+      domain: domainRaw.length > 0 ? domainRaw : undefined,
+    });
   }
   return rows;
 }
@@ -266,6 +285,7 @@ async function processBook(
   total: number,
   author?: string,
   isbn?: string,
+  folders?: UploadFolders,
 ): Promise<void> {
   const bookStartMs = Date.now();
   const mem = process.memoryUsage();
@@ -301,8 +321,8 @@ async function processBook(
     const docxBuffer = await exportDOCX(session);
     console.log(`[BATCH] (${index + 1}/${total}) DOCX ready for "${title}"`);
 
-    await uploadPdfToDrive(session.pdfBuffer, `${safeName}.pdf`);
-    await uploadDocxToDrive(docxBuffer, `${safeName}.docx`);
+    await uploadPdfToDrive(session.pdfBuffer, `${safeName}.pdf`, folders?.pdfFolderId);
+    await uploadDocxToDrive(docxBuffer, `${safeName}.docx`, folders?.docFolderId);
 
     deletePersistedSession(session.id);
 
@@ -393,29 +413,54 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // Domain-based folders: root → domain → PDF, Doc (no instance level)
+  const rootId = process.env.GDRIVE_EBOOKS_ROOT_ID;
+  const useDomainFolders = !!rootId;
+
   // Validate Drive config before processing any book (fail fast)
-  const pdfFolderId = process.env.GDRIVE_PDF_FOLDER_ID;
-  const docFolderId = process.env.GDRIVE_DOC_FOLDER_ID;
-  if (!pdfFolderId || !docFolderId) {
-    console.error('[BATCH] Missing Drive folder IDs. Set GDRIVE_PDF_FOLDER_ID and GDRIVE_DOC_FOLDER_ID in .env');
-    process.exit(1);
-  }
-  try {
-    const drive = getDriveClient();
-    await drive.files.get({ fileId: pdfFolderId, fields: 'id' });
-    await drive.files.get({ fileId: docFolderId, fields: 'id' });
-    console.log('[BATCH] Drive folders validated.');
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const code = err && typeof err === 'object' && 'code' in err ? (err as { code?: number }).code : undefined;
-    console.error(`[BATCH] Drive validation failed: ${msg}`);
-    if (code !== undefined) console.error(`[BATCH] API response code: ${code}`);
-    if (/invalid_grant|Token has been expired|credentials/i.test(msg)) {
-      console.error('[BATCH] Re-run OAuth, update GDRIVE_REFRESH_TOKEN, then restart.');
-    } else if (/File not found|404|not found/i.test(msg) || code === 404) {
-      console.error('[BATCH] Folder not visible to this token. Fix: (1) Rebuild image so app uses full Drive scope. (2) Run OAuth again (localhost:4000/auth/google or your server URL). (3) Sign in with the Google account that OWNS the folders. (4) Put the NEW refresh token in .env and restart.');
+  if (useDomainFolders) {
+    try {
+      const drive = getDriveClient();
+      await drive.files.get({ fileId: rootId, fields: 'id', supportsAllDrives: true });
+      console.log('[BATCH] Drive root folder validated (domain-based upload).');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const code = err && typeof err === 'object' && 'code' in err ? (err as { code?: number }).code : undefined;
+      console.error(`[BATCH] Drive validation failed (root folder): ${msg}`);
+      if (code !== undefined) console.error(`[BATCH] API response code: ${code}`);
+      if (/invalid_grant|Token has been expired|credentials/i.test(msg)) {
+        console.error('[BATCH] Re-run OAuth, update GDRIVE_REFRESH_TOKEN, then restart.');
+      } else if (/File not found|404|not found/i.test(msg) || code === 404) {
+        console.error('[BATCH] Root folder not visible. Check GDRIVE_EBOOKS_ROOT_ID and Drive permissions.');
+      }
+      process.exit(1);
     }
-    process.exit(1);
+  } else {
+    const pdfFolderId = process.env.GDRIVE_PDF_FOLDER_ID;
+    const docFolderId = process.env.GDRIVE_DOC_FOLDER_ID;
+    if (!pdfFolderId || !docFolderId) {
+      console.error(
+        '[BATCH] Missing Drive config. Set either GDRIVE_EBOOKS_ROOT_ID (domain-based) or GDRIVE_PDF_FOLDER_ID and GDRIVE_DOC_FOLDER_ID in .env',
+      );
+      process.exit(1);
+    }
+    try {
+      const drive = getDriveClient();
+      await drive.files.get({ fileId: pdfFolderId, fields: 'id' });
+      await drive.files.get({ fileId: docFolderId, fields: 'id' });
+      console.log('[BATCH] Drive folders validated (legacy).');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const code = err && typeof err === 'object' && 'code' in err ? (err as { code?: number }).code : undefined;
+      console.error(`[BATCH] Drive validation failed: ${msg}`);
+      if (code !== undefined) console.error(`[BATCH] API response code: ${code}`);
+      if (/invalid_grant|Token has been expired|credentials/i.test(msg)) {
+        console.error('[BATCH] Re-run OAuth, update GDRIVE_REFRESH_TOKEN, then restart.');
+      } else if (/File not found|404|not found/i.test(msg) || code === 404) {
+        console.error('[BATCH] Folder not visible to this token. Fix: (1) Rebuild image so app uses full Drive scope. (2) Run OAuth again (localhost:4000/auth/google or your server URL). (3) Sign in with the Google account that OWNS the folders. (4) Put the NEW refresh token in .env and restart.');
+      }
+      process.exit(1);
+    }
   }
 
   const sessionErrors: Array<{ title: string; error: string }> = [];
@@ -442,12 +487,26 @@ async function main(): Promise<void> {
         continue;
       }
 
+      let folders: UploadFolders | undefined;
+      if (useDomainFolders && row.domain) {
+        try {
+          folders = await resolveUploadFolders(row.domain);
+        } catch (driveErr) {
+          const errMsg = driveErr instanceof Error ? driveErr.message : String(driveErr);
+          console.error(`[BATCH] Resolve folders failed for "${row.title}" (domain: ${row.domain}) — ${errMsg}. Adding to failed.`);
+          if (!progress.failed.includes(row.title)) progress.failed.push(row.title);
+          saveProgress(progress);
+          sessionErrors.push({ title: row.title, error: `Drive resolve failed: ${errMsg}` });
+          continue;
+        }
+      }
+
       if (SKIP_IF_IN_DRIVE) {
         const pdfName = `${safeName}.pdf`;
         const docxName = `${safeName}.docx`;
         let alreadyInDrive = false;
         try {
-          alreadyInDrive = await bookAlreadyInDrive(pdfName, docxName);
+          alreadyInDrive = await bookAlreadyInDrive(pdfName, docxName, folders);
         } catch (driveErr) {
           const errMsg = driveErr instanceof Error ? driveErr.message : String(driveErr);
           console.error(`[BATCH] Drive check failed for "${row.title}" — ${errMsg}. Adding to failed; re-run after fixing connectivity.`);
@@ -467,7 +526,7 @@ async function main(): Promise<void> {
       }
 
       try {
-        await processBook(row.title, globalIdx, titles.length, row.author, row.isbn);
+        await processBook(row.title, globalIdx, titles.length, row.author, row.isbn, folders);
         progress.completed.push(row.title);
         const failedIdx = progress.failed.indexOf(row.title);
         if (failedIdx !== -1) progress.failed.splice(failedIdx, 1);
