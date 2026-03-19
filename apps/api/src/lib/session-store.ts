@@ -1,4 +1,5 @@
 import { SessionState } from '@/lib/types';
+import { isTechnicalTopic } from '@/lib/topic-classifier';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -45,6 +46,10 @@ function deserialize(raw: string): SessionState {
   const { subtopicMarkdowns: _m, subtopicVersions: _v, pdfBufferBase64: _b, ...rest } = obj as SerializedSession;
   const session = {
     ...rest,
+    // Migrate legacy sessions that pre-date isTechnical: re-classify from the topic so the
+    // session behaves consistently with what the classifier would have decided at creation time.
+    // `topic` is always set on valid sessions; the `?? ''` guard is a safety-only fallback.
+    isTechnical: typeof rest.isTechnical === 'boolean' ? rest.isTechnical : isTechnicalTopic(rest.topic ?? ''),
     unitIntroductions: Array.isArray(rest.unitIntroductions) ? rest.unitIntroductions : [],
     unitEndSummaries: Array.isArray(rest.unitEndSummaries) ? rest.unitEndSummaries : [],
     unitExercises: Array.isArray(rest.unitExercises) ? rest.unitExercises : [],
@@ -141,6 +146,7 @@ export function createSession(topic: string, model: string): SessionState | null
     id: crypto.randomUUID(),
     status: 'queued',
     topic,
+    isTechnical: isTechnicalTopic(topic),
     model,
     phase: 'init',
     progress: 0,

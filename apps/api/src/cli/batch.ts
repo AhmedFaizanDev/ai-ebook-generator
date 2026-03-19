@@ -38,6 +38,7 @@ import {
 } from '@/drive/upload';
 import { getDriveClient } from '@/drive/auth';
 import { loadSessionById, deletePersistedSession } from '@/lib/session-store';
+import { isTechnicalTopic } from '@/lib/topic-classifier';
 import type { SessionState } from '@/lib/types';
 
 const SESSIONS_DIR = path.resolve(process.cwd(), '.sessions');
@@ -106,14 +107,18 @@ interface BatchRow {
   author?: string;
   isbn?: string;
   domain?: string;
+  /** When set, overrides keyword-based technical classification from title. */
+  isTechnical?: boolean;
 }
 
-function createBatchSession(topic: string, author?: string, isbn?: string, stableId?: string): SessionState {
+function createBatchSession(topic: string, author?: string, isbn?: string, stableId?: string, isTechnicalOverride?: boolean): SessionState {
   const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+  const isTechnical = typeof isTechnicalOverride === 'boolean' ? isTechnicalOverride : isTechnicalTopic(topic);
   return {
     id: stableId ?? crypto.randomUUID(),
     status: 'queued',
     topic,
+    isTechnical,
     author: author?.trim() || undefined,
     isbn: isbn?.trim() || undefined,
     model,
@@ -151,6 +156,7 @@ function getOrCreateSessionForBook(
   title: string,
   author?: string,
   isbn?: string,
+  isTechnicalOverride?: boolean,
 ): { session: SessionState; resumed: boolean } {
   const sid = stableSessionId(title);
   const existing = loadSessionById(sid);
@@ -158,7 +164,7 @@ function getOrCreateSessionForBook(
     existing.lastActivityAt = Date.now();
     return { session: existing, resumed: true };
   }
-  const session = createBatchSession(title, author, isbn, sid);
+  const session = createBatchSession(title, author, isbn, sid, isTechnicalOverride);
   return { session, resumed: false };
 }
 
@@ -195,6 +201,14 @@ function unquote(value: string): string {
   return s;
 }
 
+/** Parse optional technical column: true for technical, false for non-technical, undefined if missing/unknown. */
+function parseTechnicalValue(raw: string): boolean | undefined {
+  const v = raw.trim().toLowerCase();
+  if (['true', 'yes', 'y', '1', 'technical', 'tech'].includes(v)) return true;
+  if (['false', 'no', 'n', '0', 'non-technical', 'nontechnical', 'non tech'].includes(v)) return false;
+  return undefined;
+}
+
 async function readRowsFromExcel(filePath: string): Promise<BatchRow[]> {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.readFile(filePath);
@@ -203,29 +217,36 @@ async function readRowsFromExcel(filePath: string): Promise<BatchRow[]> {
   if (!sheet) throw new Error('Excel file has no worksheets');
 
   const rows: BatchRow[] = [];
+  const headerRow = sheet.getRow(1);
+  const headers: string[] = [];
+  headerRow.eachCell((cell, colNumber) => {
+    const val = cell.value;
+    headers[colNumber - 1] = val != null ? String(val).trim() : '';
+  });
+
+  const getCell = (row: ExcelJS.Row, key: string): string => {
+    const idx = headers.findIndex((h) => h.trim().toLowerCase() === key.toLowerCase());
+    if (idx < 0) return '';
+    const val = row.getCell(idx + 1).value;
+    return val != null ? unquote(String(val).trim()) : '';
+  };
+
   sheet.eachRow((row, rowNumber) => {
     if (rowNumber === 1) return;
-    const titleVal = row.getCell(1).value;
-    const authorVal = row.getCell(2).value;
-    const isbnVal = row.getCell(3).value;
-    const domainVal = row.getCell(4).value;
-    if (titleVal !== null && titleVal !== undefined) {
-      const title = unquote(String(titleVal));
-      if (title.length > 0) {
-        const authorRaw =
-          authorVal !== null && authorVal !== undefined ? unquote(String(authorVal)) : '';
-        const isbnRaw =
-          isbnVal !== null && isbnVal !== undefined ? unquote(String(isbnVal)) : '';
-        const domainRaw =
-          domainVal !== null && domainVal !== undefined ? unquote(String(domainVal)) : '';
-        rows.push({
-          title,
-          author: authorRaw.length > 0 ? authorRaw : undefined,
-          isbn: isbnRaw.length > 0 ? isbnRaw : undefined,
-          domain: domainRaw.length > 0 ? domainRaw : undefined,
-        });
-      }
-    }
+    const title = getCell(row, 'title') || getCell(row, 'Title') || getCell(row, 'topic') || getCell(row, 'book') || getCell(row, 'Book Title');
+    if (!title) return;
+    const authorRaw = getCell(row, 'author') || getCell(row, 'Author');
+    const isbnRaw = getCell(row, 'isbn') || getCell(row, 'ISBN');
+    const domainRaw = getCell(row, 'domain') || getCell(row, 'Domain') || getCell(row, 'folder');
+    const technicalRaw = getCell(row, 'technical') || getCell(row, 'isTechnical') || getCell(row, 'type');
+    const isTechnical = parseTechnicalValue(technicalRaw);
+    rows.push({
+      title,
+      author: authorRaw.length > 0 ? authorRaw : undefined,
+      isbn: isbnRaw.length > 0 ? isbnRaw : undefined,
+      domain: domainRaw.length > 0 ? domainRaw : undefined,
+      isTechnical: isTechnical,
+    });
   });
   return rows;
 }
@@ -259,11 +280,14 @@ function readRowsFromCsv(filePath: string): BatchRow[] {
     const authorRaw = getCol(record, 'author');
     const isbnRaw = getCol(record, 'isbn');
     const domainRaw = getCol(record, 'domain', 'folder');
+    const technicalRaw = getCol(record, 'technical', 'isTechnical', 'type');
+    const isTechnical = parseTechnicalValue(technicalRaw);
     rows.push({
       title,
       author: authorRaw.length > 0 ? authorRaw : undefined,
       isbn: isbnRaw.length > 0 ? isbnRaw : undefined,
       domain: domainRaw.length > 0 ? domainRaw : undefined,
+      isTechnical,
     });
   }
   return rows;
@@ -286,12 +310,13 @@ async function processBook(
   author?: string,
   isbn?: string,
   folders?: UploadFolders,
+  isTechnicalOverride?: boolean,
 ): Promise<void> {
   const bookStartMs = Date.now();
   const mem = process.memoryUsage();
   console.log(`[BATCH] (${index + 1}/${total}) Generating: "${title}" | heap=${Math.round(mem.heapUsed / 1024 / 1024)}MB`);
 
-  const { session, resumed } = getOrCreateSessionForBook(title, author, isbn);
+  const { session, resumed } = getOrCreateSessionForBook(title, author, isbn, isTechnicalOverride);
   session.batchIndex = index + 1;
   session.batchTotal = total;
   if (resumed) {
@@ -526,7 +551,7 @@ async function main(): Promise<void> {
       }
 
       try {
-        await processBook(row.title, globalIdx, titles.length, row.author, row.isbn, folders);
+        await processBook(row.title, globalIdx, titles.length, row.author, row.isbn, folders, row.isTechnical);
         progress.completed.push(row.title);
         const failedIdx = progress.failed.indexOf(row.title);
         if (failedIdx !== -1) progress.failed.splice(failedIdx, 1);

@@ -2,7 +2,7 @@ import { SessionState } from '@/lib/types';
 import { LIGHT_MODEL } from '@/lib/config';
 import { callLLM } from '@/lib/openai-client';
 import { incrementCounters } from '@/lib/counters';
-import { SYSTEM_PROMPT } from '@/prompts/system';
+import { buildSystemPrompt } from '@/prompts/system';
 import { buildBibliographyPrompt } from '@/prompts/bibliography';
 
 export async function generateBibliography(session: SessionState): Promise<string> {
@@ -13,7 +13,7 @@ export async function generateBibliography(session: SessionState): Promise<strin
 
   const result = await callLLM({
     model: LIGHT_MODEL,
-    systemPrompt: SYSTEM_PROMPT,
+    systemPrompt: buildSystemPrompt(session.isTechnical),
     userPrompt,
     maxTokens: 1500,
     temperature: 0.3,

@@ -38,3 +38,6 @@ coverage/
 # session persistence
 .sessions/
 apps/api/.sessions/
+
+# batch progress (completed/failed tracking)
+apps/api/.batch-progress.json

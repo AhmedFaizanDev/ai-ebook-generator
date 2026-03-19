@@ -125,7 +125,7 @@ async function callAndParse(
 }
 
 export async function generateStructure(session: SessionState): Promise<BookStructure> {
-  const userPrompt = buildStructurePrompt(session.topic);
+  const userPrompt = buildStructurePrompt(session.topic, session.isTechnical);
 
   let parsed: unknown;
   try {

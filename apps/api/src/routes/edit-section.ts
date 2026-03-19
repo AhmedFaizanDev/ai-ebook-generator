@@ -3,7 +3,7 @@ import { getSession, saveSession } from '@/lib/session-store';
 import { LIGHT_MODEL } from '@/lib/config';
 import { callLLM } from '@/lib/openai-client';
 import { incrementCounters } from '@/lib/counters';
-import { SYSTEM_PROMPT } from '@/prompts/system';
+import { buildSystemPrompt } from '@/prompts/system';
 import { buildEditSectionPrompt, EditAction } from '@/prompts/edit-section';
 
 const VALID_ACTIONS: EditAction[] = ['expand', 'rewrite', 'add_example', 'add_table', 'shorten'];
@@ -218,7 +218,7 @@ export default function registerEditSection(router: Router): void {
 
       const result = await callLLM({
         model: LIGHT_MODEL,
-        systemPrompt: SYSTEM_PROMPT,
+        systemPrompt: buildSystemPrompt(session.isTechnical),
         userPrompt,
         maxTokens: 2200,
         temperature: 0.4,
