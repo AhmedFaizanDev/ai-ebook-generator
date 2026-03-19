@@ -1,5 +1,6 @@
 import { marked, Renderer } from 'marked';
 import hljs from 'highlight.js';
+import DOMPurify from 'dompurify';
 
 function escapeHtml(str: string): string {
   return str
@@ -11,6 +12,11 @@ function escapeHtml(str: string): string {
 
 const renderer: Partial<Renderer> = {
   code({ text, lang }: { text: string; lang?: string }) {
+    if (lang === 'output') {
+      const safe = DOMPurify.sanitize(text);
+      return `<div class="html-output-preview"><span class="output-label">Output</span><div class="html-output-body">${safe}</div></div>`;
+    }
+
     let highlighted: string;
     if (lang && hljs.getLanguage(lang)) {
       try {
