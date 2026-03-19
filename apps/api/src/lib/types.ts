@@ -23,6 +23,10 @@ export interface SessionState {
   id: string;
   status: SessionStatus;
   topic: string;
+  /** True when the topic is classified as technical (programming, engineering, sciences, etc.);
+   *  false for non-technical topics (fiction, history, philosophy, arts, etc.).
+   *  Controls whether code blocks are included in generated content. */
+  isTechnical: boolean;
   /** Optional author for cover; if not set, a random author is chosen from a fixed list. */
   author?: string;
   /** Optional ISBN from batch upload CSV (column C); shown on copyright page. */
@@ -69,6 +73,8 @@ export interface SubtopicContext {
   prevUnitSummary: string | null;
   prevSubtopicSummary: string | null;
   model: string;
+  /** Mirrors session.isTechnical — controls whether code blocks are included in the subtopic prompt. */
+  isTechnical: boolean;
 }
 
 export interface VisualValidationResult {

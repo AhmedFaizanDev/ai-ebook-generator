@@ -2,7 +2,7 @@ import { SessionState } from '@/lib/types';
 import { LIGHT_MODEL } from '@/lib/config';
 import { callLLM } from '@/lib/openai-client';
 import { incrementCounters } from '@/lib/counters';
-import { SYSTEM_PROMPT } from '@/prompts/system';
+import { buildSystemPrompt } from '@/prompts/system';
 import { buildUnitExercisesPrompt } from '@/prompts/unit-exercises';
 
 export async function generateUnitExercises(
@@ -26,7 +26,7 @@ export async function generateUnitExercises(
 
   const result1 = await callLLM({
     model: LIGHT_MODEL,
-    systemPrompt: SYSTEM_PROMPT,
+    systemPrompt: buildSystemPrompt(session.isTechnical),
     userPrompt: prompt1,
     maxTokens: 1200,
     temperature: 0.3,
@@ -39,7 +39,7 @@ export async function generateUnitExercises(
 
   const result2 = await callLLM({
     model: LIGHT_MODEL,
-    systemPrompt: SYSTEM_PROMPT,
+    systemPrompt: buildSystemPrompt(session.isTechnical),
     userPrompt: prompt2,
     maxTokens: 1200,
     temperature: 0.3,

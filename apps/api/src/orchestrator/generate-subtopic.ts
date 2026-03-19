@@ -1,7 +1,7 @@
 import { SubtopicContext, SessionState } from '@/lib/types';
 import { callLLM } from '@/lib/openai-client';
 import { incrementCounters } from '@/lib/counters';
-import { SYSTEM_PROMPT } from '@/prompts/system';
+import { buildSystemPrompt } from '@/prompts/system';
 import { buildSubtopicPrompt } from '@/prompts/subtopic';
 import { buildVisualRetryPrompt } from '@/prompts/subtopic-visual-retry';
 import { visualValidator } from './visual-validator';
@@ -16,7 +16,7 @@ export async function generateSubtopic(
   const label = `subtopic U${ctx.unitIndex + 1}/S${ctx.subtopicIndex + 1}`;
   const result = await callLLM({
     model: ctx.model,
-    systemPrompt: SYSTEM_PROMPT,
+    systemPrompt: buildSystemPrompt(session.isTechnical),
     userPrompt,
     maxTokens: 1800,
     temperature: 0.4,
@@ -37,11 +37,11 @@ export async function generateSubtopic(
 
   if (!validation.pass) {
     try {
-      const retryPrompt = buildSubtopicPrompt(ctx) + '\n\n' + buildVisualRetryPrompt(ctx.subtopicTitle);
+      const retryPrompt = buildSubtopicPrompt(ctx) + '\n\n' + buildVisualRetryPrompt(ctx.subtopicTitle, session.isTechnical);
 
       const retryResult = await callLLM({
         model: ctx.model,
-        systemPrompt: SYSTEM_PROMPT,
+        systemPrompt: buildSystemPrompt(session.isTechnical),
         userPrompt: retryPrompt,
         maxTokens: 1800,
         temperature: 0.4,

@@ -187,6 +187,7 @@ export async function orchestrate(session: SessionState): Promise<void> {
                   prevUnitSummary,
                   prevSubtopicSummary: null,
                   model: session.model,
+                  isTechnical: session.isTechnical,
                 },
                 session
               ),

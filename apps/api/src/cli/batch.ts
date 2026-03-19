@@ -38,6 +38,7 @@ import {
 } from '@/drive/upload';
 import { getDriveClient } from '@/drive/auth';
 import { loadSessionById, deletePersistedSession } from '@/lib/session-store';
+import { isTechnicalTopic } from '@/lib/topic-classifier';
 import type { SessionState } from '@/lib/types';
 
 const SESSIONS_DIR = path.resolve(process.cwd(), '.sessions');
@@ -114,6 +115,7 @@ function createBatchSession(topic: string, author?: string, isbn?: string, stabl
     id: stableId ?? crypto.randomUUID(),
     status: 'queued',
     topic,
+    isTechnical: isTechnicalTopic(topic),
     author: author?.trim() || undefined,
     isbn: isbn?.trim() || undefined,
     model,

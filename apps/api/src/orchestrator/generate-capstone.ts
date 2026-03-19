@@ -2,7 +2,7 @@ import { SessionState } from '@/lib/types';
 import { CAPSTONE_COUNT } from '@/lib/config';
 import { callLLM } from '@/lib/openai-client';
 import { incrementCounters } from '@/lib/counters';
-import { SYSTEM_PROMPT } from '@/prompts/system';
+import { buildSystemPrompt } from '@/prompts/system';
 import { buildBatchedCapstonePrompt, buildCapstonePrompt } from '@/prompts/capstone';
 
 function splitBatchedOutput(raw: string, expectedCount: number): string[] | null {
@@ -22,12 +22,13 @@ export async function generateCapstones(session: SessionState): Promise<string> 
     const batchPrompt = buildBatchedCapstonePrompt(
       session.topic,
       structure.capstoneTopics,
-      session.unitSummaries
+      session.unitSummaries,
+      session.isTechnical
     );
 
     const batchResult = await callLLM({
       model: session.model,
-      systemPrompt: SYSTEM_PROMPT,
+      systemPrompt: buildSystemPrompt(session.isTechnical),
       userPrompt: batchPrompt,
       maxTokens: 5000,
       temperature: 0.35,
@@ -59,12 +60,13 @@ export async function generateCapstones(session: SessionState): Promise<string> 
       session.topic,
       i,
       structure.capstoneTopics[i],
-      session.unitSummaries
+      session.unitSummaries,
+      session.isTechnical
     );
 
     const result = await callLLM({
       model: session.model,
-      systemPrompt: SYSTEM_PROMPT,
+      systemPrompt: buildSystemPrompt(session.isTechnical),
       userPrompt,
       maxTokens: 2600,
       temperature: 0.35,
