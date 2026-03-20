@@ -163,6 +163,68 @@ ${catalogBlock}
 }
 
 /**
+ * Strip HTML/markup from LLM-generated markdown chunks only (not cover/TOC).
+ * Removes fenced html/xml/svg blocks, raw tags (div, table, svg, etc.), and diagram-ish headings.
+ */
+function stripLlmHtmlArtifacts(md: string): string {
+  if (!md || typeof md !== 'string') return md;
+  let cleaned = md;
+
+  // Fenced markup blocks; html may be followed by ```output
+  cleaned = cleaned.replace(
+    /```html?\s*\n[\s\S]*?\n```(\s*\n```\s*output\s*\n[\s\S]*?\n```)?/gi,
+    '',
+  );
+  cleaned = cleaned.replace(/```(?:xml|svg|xhtml)\s*\n[\s\S]*?\n```/gi, '');
+  cleaned = cleaned.replace(/```\s*output\s*\n[\s\S]*?\n```/gi, '');
+
+  cleaned = cleaned.replace(/<!--[\s\S]*?-->/g, '');
+  cleaned = cleaned.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '');
+  cleaned = cleaned.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+
+  cleaned = cleaned.replace(/<div\s+class="rendered-html-output"[^>]*>[\s\S]*?<\/div>/gi, '');
+
+  const blockPair = /<(svg|canvas|iframe|table|section|article)\b[^>]*>[\s\S]*?<\/\1>/gi;
+  for (let i = 0; i < 25; i++) {
+    const next = cleaned.replace(blockPair, '');
+    if (next === cleaned) break;
+    cleaned = next;
+  }
+
+  for (let i = 0; i < 35; i++) {
+    const next = cleaned.replace(/<div\b[^>]*>[\s\S]*?<\/div>/gi, '');
+    if (next === cleaned) break;
+    cleaned = next;
+  }
+
+  for (let i = 0; i < 25; i++) {
+    const next = cleaned.replace(/<span\b[^>]*>[\s\S]*?<\/span>/gi, '');
+    if (next === cleaned) break;
+    cleaned = next;
+  }
+
+  cleaned = cleaned.replace(
+    /<\/?(?:img|br|hr|input|embed|object|wbr|source|track|col|meta|link|base|area)\b[^>]*\/?>/gi,
+    '',
+  );
+
+  cleaned = cleaned.replace(/<div\b[^>]*page-break[^>]*>\s*<\/div>/gi, '');
+  cleaned = cleaned.replace(/^<\/(?:div|span|table|section|article)>\s*$/gim, '');
+
+  cleaned = cleaned.replace(
+    /^#{1,3}\s+(?:Example of .+(?:Implementation|Layout|Output|Rendering)|(?:Rendered|HTML|Expected)\s+Output|(?:Visual|Diagram)\s+(?:Representation|Illustration|Example)).*$\n*/gim,
+    '',
+  );
+  cleaned = cleaned.replace(
+    /^(?:The (?:following|expected|above) (?:code snippet|layout|output|HTML|example|diagram)[\s\S]*?\.)\s*$/gm,
+    '',
+  );
+
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+  return cleaned;
+}
+
+/**
  * The front matter (cover + copyright) is raw HTML that gets injected directly
  * into the Markdown stream. Marked will pass it through as-is because it
  * recognises block-level HTML.
@@ -178,7 +240,7 @@ function assembleParts(session: SessionState, getSubtopic: (u: number, s: number
   // 2. Preface (LLM-generated Markdown — starts on a new page, before TOC)
   if (session.prefaceMarkdown) {
     parts.push('\n\n<div style="page-break-before: always;"></div>\n\n');
-    parts.push(session.prefaceMarkdown);
+    parts.push(stripLlmHtmlArtifacts(session.prefaceMarkdown));
   }
 
   // 3. Table of Contents (new page, clean numbered entries — raw HTML)
@@ -216,46 +278,46 @@ function assembleParts(session: SessionState, getSubtopic: (u: number, s: number
     // 4a. Unit Introduction
     const intro = session.unitIntroductions[u];
     if (intro) {
-      parts.push(intro);
+      parts.push(stripLlmHtmlArtifacts(intro));
     }
 
     // 4b. Subtopics
     for (let s = 0; s < unit.subtopics.length; s++) {
       const md = getSubtopic(u, s);
-      if (md) parts.push(md);
+      if (md) parts.push(stripLlmHtmlArtifacts(md));
     }
 
     // 4c. Unit End Summary
     const endSummary = session.unitEndSummaries[u];
     if (endSummary) {
-      parts.push(endSummary);
+      parts.push(stripLlmHtmlArtifacts(endSummary));
     }
 
     // 4d. Unit Exercises (ensure Option A is on its own line)
     const exercises = session.unitExercises[u];
     if (exercises) {
-      parts.push(ensureNewlineBeforeOptionA(exercises));
+      parts.push(stripLlmHtmlArtifacts(ensureNewlineBeforeOptionA(exercises)));
     }
   }
 
   // 5. Capstone Projects
   if (session.capstonesMarkdown) {
-    parts.push(session.capstonesMarkdown);
+    parts.push(stripLlmHtmlArtifacts(session.capstonesMarkdown));
   }
 
   // 6. Case Studies
   if (session.caseStudiesMarkdown) {
-    parts.push(session.caseStudiesMarkdown);
+    parts.push(stripLlmHtmlArtifacts(session.caseStudiesMarkdown));
   }
 
   // 7. Glossary
   if (session.glossaryMarkdown) {
-    parts.push(session.glossaryMarkdown);
+    parts.push(stripLlmHtmlArtifacts(session.glossaryMarkdown));
   }
 
   // 8. Bibliography (sanitize to remove junk/artifact characters common in LLM output)
   if (session.bibliographyMarkdown) {
-    parts.push(sanitizeMarkdown(session.bibliographyMarkdown));
+    parts.push(sanitizeMarkdown(stripLlmHtmlArtifacts(session.bibliographyMarkdown)));
   }
 
   return parts.join('\n\n');
