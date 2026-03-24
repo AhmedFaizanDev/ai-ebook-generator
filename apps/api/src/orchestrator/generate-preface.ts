@@ -13,7 +13,7 @@ export async function generatePreface(session: SessionState): Promise<string> {
 
   const result = await callLLM({
     model: LIGHT_MODEL,
-    systemPrompt: buildSystemPrompt(session.isTechnical),
+    systemPrompt: buildSystemPrompt(session.isTechnical, session.allowCodeBlocks),
     userPrompt,
     maxTokens: 900,
     temperature: 0.3,

@@ -1,7 +1,10 @@
 import { Marked, Tokens } from 'marked';
 import hljs from 'highlight.js';
+import fs from 'fs';
+import katex from 'katex';
 
 let highlightCssCache: string | null = null;
+let mathCssCache: string | null = null;
 
 export function getHighlightCss(): string {
   if (!highlightCssCache) {
@@ -24,6 +27,17 @@ export function getHighlightCss(): string {
   return highlightCssCache;
 }
 
+export function getMathCss(): string {
+  if (mathCssCache !== null) return mathCssCache;
+  try {
+    const cssPath = require.resolve('katex/dist/katex.min.css');
+    mathCssCache = fs.readFileSync(cssPath, 'utf8');
+  } catch {
+    mathCssCache = '';
+  }
+  return mathCssCache;
+}
+
 function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
@@ -31,6 +45,80 @@ function escapeHtml(text: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function sanitizeDiagramHtml(html: string): string {
+  if (!html) return html;
+  return html
+    .replace(/<\s*(script|iframe|object|embed|link|meta|base)[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, '')
+    .replace(/<\s*(script|iframe|object|embed|link|meta|base)[^>]*\/?>/gi, '')
+    .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/\s(href|src)\s*=\s*("javascript:[^"]*"|'javascript:[^']*')/gi, '');
+}
+
+function renderDiagramFigure(rawHtml: string): string {
+  const cleaned = sanitizeDiagramHtml(rawHtml.trim());
+  if (!cleaned) return '';
+  const hasCaption = /<figcaption\b|class\s*=\s*["'][^"']*caption[^"']*["']/i.test(cleaned);
+  const caption = hasCaption ? '' : '<figcaption>Figure: Visual Summary</figcaption>';
+  return `<figure class="rendered-html-output"><div class="diagram-canvas">${cleaned}</div>${caption}</figure>\n`;
+}
+
+function transformOutsideCodeFences(
+  markdown: string,
+  transform: (text: string) => string,
+): string {
+  const fenceRegex = /```[\s\S]*?```/g;
+  let result = '';
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  while ((match = fenceRegex.exec(markdown)) !== null) {
+    const nonCode = markdown.slice(cursor, match.index);
+    result += transform(nonCode);
+    result += match[0];
+    cursor = fenceRegex.lastIndex;
+  }
+  result += transform(markdown.slice(cursor));
+  return result;
+}
+
+function renderMath(latex: string, displayMode: boolean): string {
+  const source = latex.trim();
+  if (!source) return '';
+  try {
+    return katex.renderToString(source, {
+      displayMode,
+      throwOnError: false,
+      output: 'htmlAndMathml',
+      strict: 'ignore',
+    });
+  } catch {
+    return displayMode ? `\\[${source}\\]` : `\\(${source}\\)`;
+  }
+}
+
+function preprocessMath(markdown: string): string {
+  if (!markdown || typeof markdown !== 'string') return markdown;
+
+  return transformOutsideCodeFences(markdown, (segment) => {
+    const withDisplay = segment
+      // Preferred block-math delimiters.
+      .replace(/\\\[([\s\S]*?)\\\]/g, (_m, expr: string) => {
+        const rendered = renderMath(expr, true);
+        return rendered ? `\n<div class="math-display">${rendered}</div>\n` : '';
+      })
+      // Backward compatibility for $$...$$ block math.
+      .replace(/\$\$([\s\S]*?)\$\$/g, (_m, expr: string) => {
+        const rendered = renderMath(expr, true);
+        return rendered ? `\n<div class="math-display">${rendered}</div>\n` : '';
+      });
+
+    // Preferred inline-math delimiters.
+    return withDisplay.replace(/\\\((.+?)\\\)/g, (_m, expr: string) => {
+      const rendered = renderMath(expr, false);
+      return rendered ? `<span class="math-inline">${rendered}</span>` : '';
+    });
+  });
 }
 
 /**
@@ -44,20 +132,31 @@ function preprocessHtmlOutputBlocks(markdown: string): string {
   // Match: ```html (or htm) + newline + content + newline + ``` + optional whitespace + ```output + newline + any content + newline + ```
   const re = /```html?\s*\n([\s\S]*?)\n```\s*\n```output\s*\n[\s\S]*?\n```/gi;
   return markdown.replace(re, (_match, htmlContent: string) => {
-    const trimmed = htmlContent.trim();
+    const rendered = renderDiagramFigure(htmlContent);
     return (
       '```html\n' +
       htmlContent +
       '\n```\n\n' +
-      '<div class="rendered-html-output" style="border:1px solid #e0e0e0;padding:1em;margin:1em 0;background:#fafafa;">' +
-      trimmed +
-      '</div>\n'
+      rendered
     );
   });
 }
 
+function sanitizeMermaidSyntax(raw: string): string {
+  return raw
+    .replace(/\u201C|\u201D/g, '"')
+    .replace(/\u2018|\u2019/g, "'")
+    .replace(/\u2014/g, '--')
+    .replace(/\u2013/g, '-')
+    .replace(/\u00A0/g, ' ')
+    .replace(/[\u200B-\u200D\uFEFF\u2060]/g, '')
+    .replace(/\t/g, '    ')
+    .trim();
+}
+
 export function markdownToHtml(markdown: string): string {
-  const preprocessed = preprocessHtmlOutputBlocks(markdown);
+  const withMath = preprocessMath(markdown);
+  const preprocessed = preprocessHtmlOutputBlocks(withMath);
   const marked = new Marked({ gfm: true, breaks: false });
 
   marked.use({
@@ -66,10 +165,14 @@ export function markdownToHtml(markdown: string): string {
         const { text, lang } = token;
         if (lang) {
           const safeLang = lang.toLowerCase();
+          // Render ```mermaid blocks as <pre class="mermaid"> for client-side Mermaid.js rendering
+          if (safeLang === 'mermaid') {
+            const cleaned = sanitizeMermaidSyntax(text);
+            return `<div class="mermaid-container"><pre class="mermaid">${cleaned}</pre></div>\n`;
+          }
           // Render ```html / ```htm as actual HTML (diagrams, layouts) instead of code
           if (safeLang === 'html' || safeLang === 'htm') {
-            const trimmed = text.trim();
-            return `<div class="rendered-html-output" style="border:1px solid #e0e0e0;padding:1em;margin:1em 0;background:#fafafa;">${trimmed}</div>\n`;
+            return renderDiagramFigure(text);
           }
           if (hljs.getLanguage(safeLang)) {
             try {

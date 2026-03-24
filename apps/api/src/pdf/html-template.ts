@@ -132,6 +132,79 @@ a {
   text-decoration: none;
 }
 
+/* --- Mermaid diagrams (constrained to ~half page) --- */
+.mermaid-container {
+  text-align: center;
+  margin: 0.8em auto;
+  page-break-inside: avoid;
+  border: 1px solid #d9d9d9;
+  background: #fafafa;
+  border-radius: 4px;
+  padding: 0.6em;
+  max-width: 100%;
+  max-height: 12cm;
+  overflow: hidden;
+}
+pre.mermaid {
+  background: transparent !important;
+  border: none !important;
+  border-left: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  text-align: center;
+  white-space: pre-wrap;
+  font-size: inherit;
+  line-height: normal;
+  overflow: hidden;
+}
+pre.mermaid svg {
+  max-width: 100% !important;
+  max-height: 11cm !important;
+  display: block;
+  margin: 0 auto;
+}
+
+.rendered-html-output {
+  border: 1px solid #d9d9d9;
+  background: #fafafa;
+  margin: 0.9em 0;
+  padding: 0.9em;
+  border-radius: 4px;
+  page-break-inside: avoid;
+}
+
+.rendered-html-output figcaption,
+.rendered-html-output .caption {
+  margin-top: 0.45em;
+  font-size: 9.5pt;
+  color: #4a4a4a;
+  text-align: center;
+}
+
+.rendered-html-output .diagram-canvas > * {
+  max-width: 100%;
+}
+
+.rendered-html-output svg,
+.rendered-html-output img,
+.rendered-html-output table {
+  max-width: 100%;
+  height: auto;
+}
+
+.math-inline .katex {
+  font-size: 1em;
+}
+
+.math-display {
+  margin: 0.7em 0;
+  text-align: center;
+}
+
+.math-display .katex-display {
+  margin: 0;
+}
+
 /* --- Title / Copyright page (A4 content area: 170mm x 252mm), match reference PDF --- */
 .cover-page {
   page-break-after: always;

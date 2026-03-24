@@ -1,5 +1,5 @@
 import { SessionState } from '@/lib/types';
-import { isTechnicalTopic } from '@/lib/topic-classifier';
+import { isTechnicalTopic, shouldAllowCodeBlocks } from '@/lib/topic-classifier';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -50,6 +50,13 @@ function deserialize(raw: string): SessionState {
     // session behaves consistently with what the classifier would have decided at creation time.
     // `topic` is always set on valid sessions; the `?? ''` guard is a safety-only fallback.
     isTechnical: typeof rest.isTechnical === 'boolean' ? rest.isTechnical : isTechnicalTopic(rest.topic ?? ''),
+    allowCodeBlocks:
+      typeof rest.allowCodeBlocks === 'boolean'
+        ? rest.allowCodeBlocks
+        : shouldAllowCodeBlocks(
+            rest.topic ?? '',
+            typeof rest.isTechnical === 'boolean' ? rest.isTechnical : isTechnicalTopic(rest.topic ?? ''),
+          ),
     unitIntroductions: Array.isArray(rest.unitIntroductions) ? rest.unitIntroductions : [],
     unitEndSummaries: Array.isArray(rest.unitEndSummaries) ? rest.unitEndSummaries : [],
     unitExercises: Array.isArray(rest.unitExercises) ? rest.unitExercises : [],
@@ -142,11 +149,13 @@ function canAcceptSession(): boolean {
 export function createSession(topic: string, model: string): SessionState | null {
   if (!canAcceptSession()) return null;
 
+  const isTechnical = isTechnicalTopic(topic);
   const session: SessionState = {
     id: crypto.randomUUID(),
     status: 'queued',
     topic,
-    isTechnical: isTechnicalTopic(topic),
+    isTechnical,
+    allowCodeBlocks: shouldAllowCodeBlocks(topic, isTechnical),
     model,
     phase: 'init',
     progress: 0,

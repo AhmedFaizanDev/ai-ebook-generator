@@ -13,7 +13,7 @@ export async function generateBibliography(session: SessionState): Promise<strin
 
   const result = await callLLM({
     model: LIGHT_MODEL,
-    systemPrompt: buildSystemPrompt(session.isTechnical),
+    systemPrompt: buildSystemPrompt(session.isTechnical, session.allowCodeBlocks),
     userPrompt,
     maxTokens: 1500,
     temperature: 0.3,

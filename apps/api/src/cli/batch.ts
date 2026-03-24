@@ -38,7 +38,7 @@ import {
 } from '@/drive/upload';
 import { getDriveClient } from '@/drive/auth';
 import { loadSessionById, deletePersistedSession } from '@/lib/session-store';
-import { isTechnicalTopic } from '@/lib/topic-classifier';
+import { isTechnicalTopic, shouldAllowCodeBlocks } from '@/lib/topic-classifier';
 import type { SessionState } from '@/lib/types';
 
 const SESSIONS_DIR = path.resolve(process.cwd(), '.sessions');
@@ -52,6 +52,17 @@ const MAX_RETRY_ROUNDS = parseInt(process.env.BATCH_MAX_RETRY_ROUNDS ?? '5', 10)
 const COOLDOWN_BETWEEN_ROUNDS_MS = parseInt(process.env.BATCH_COOLDOWN_BETWEEN_ROUNDS_MS ?? '30000', 10);
 /** Skip generation if PDF + DOCX already exist in Drive (duplicate prevention). Default: true. */
 const SKIP_IF_IN_DRIVE = process.env.BATCH_SKIP_IF_IN_DRIVE !== 'false';
+/** Force fresh generation and ignore persisted .sessions checkpoints. Default: false. */
+const IGNORE_CHECKPOINT = process.env.BATCH_IGNORE_CHECKPOINT === 'true';
+
+/**
+ * Self-restart: exit with code 0 after processing this many books so Docker
+ * (--restart unless-stopped) relaunches with a fresh V8 heap, Puppeteer, and
+ * OS handles. Progress is already saved; the next run resumes from checkpoint.
+ * Set BATCH_RESTART_AFTER to override (0 = disabled). Default: 50 books.
+ */
+const RESTART_AFTER = parseInt(process.env.BATCH_RESTART_AFTER ?? '50', 10);
+let _booksProcessedThisRun = 0;
 
 // ---------------------------------------------------------------------------
 // Progress tracking (enables resume after crash)
@@ -109,16 +120,30 @@ interface BatchRow {
   domain?: string;
   /** When set, overrides keyword-based technical classification from title. */
   isTechnical?: boolean;
+  /** Optional explicit override for whether fenced program code blocks are allowed. */
+  allowCodeBlocks?: boolean;
 }
 
-function createBatchSession(topic: string, author?: string, isbn?: string, stableId?: string, isTechnicalOverride?: boolean): SessionState {
+function createBatchSession(
+  topic: string,
+  author?: string,
+  isbn?: string,
+  stableId?: string,
+  isTechnicalOverride?: boolean,
+  allowCodeBlocksOverride?: boolean,
+): SessionState {
   const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
   const isTechnical = typeof isTechnicalOverride === 'boolean' ? isTechnicalOverride : isTechnicalTopic(topic);
+  const allowCodeBlocks =
+    typeof allowCodeBlocksOverride === 'boolean'
+      ? allowCodeBlocksOverride
+      : shouldAllowCodeBlocks(topic, isTechnical);
   return {
     id: stableId ?? crypto.randomUUID(),
     status: 'queued',
     topic,
     isTechnical,
+    allowCodeBlocks,
     author: author?.trim() || undefined,
     isbn: isbn?.trim() || undefined,
     model,
@@ -157,14 +182,17 @@ function getOrCreateSessionForBook(
   author?: string,
   isbn?: string,
   isTechnicalOverride?: boolean,
+  allowCodeBlocksOverride?: boolean,
 ): { session: SessionState; resumed: boolean } {
   const sid = stableSessionId(title);
-  const existing = loadSessionById(sid);
-  if (existing) {
-    existing.lastActivityAt = Date.now();
-    return { session: existing, resumed: true };
+  if (!IGNORE_CHECKPOINT) {
+    const existing = loadSessionById(sid);
+    if (existing) {
+      existing.lastActivityAt = Date.now();
+      return { session: existing, resumed: true };
+    }
   }
-  const session = createBatchSession(title, author, isbn, sid, isTechnicalOverride);
+  const session = createBatchSession(title, author, isbn, sid, isTechnicalOverride, allowCodeBlocksOverride);
   return { session, resumed: false };
 }
 
@@ -209,6 +237,14 @@ function parseTechnicalValue(raw: string): boolean | undefined {
   return undefined;
 }
 
+/** Parse optional codeblocks column: true to allow fenced program code, false to forbid. */
+function parseCodeBlocksValue(raw: string): boolean | undefined {
+  const v = raw.trim().toLowerCase();
+  if (['true', 'yes', 'y', '1', 'allow', 'allowed', 'code', 'codeblocks', 'code blocks'].includes(v)) return true;
+  if (['false', 'no', 'n', '0', 'forbid', 'forbidden', 'none', 'no code', 'no-code'].includes(v)) return false;
+  return undefined;
+}
+
 async function readRowsFromExcel(filePath: string): Promise<BatchRow[]> {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.readFile(filePath);
@@ -239,13 +275,16 @@ async function readRowsFromExcel(filePath: string): Promise<BatchRow[]> {
     const isbnRaw = getCell(row, 'isbn') || getCell(row, 'ISBN');
     const domainRaw = getCell(row, 'domain') || getCell(row, 'Domain') || getCell(row, 'folder');
     const technicalRaw = getCell(row, 'technical') || getCell(row, 'isTechnical') || getCell(row, 'type');
+    const codeBlocksRaw = getCell(row, 'codeblocks') || getCell(row, 'allowCodeBlocks') || getCell(row, 'code_blocks');
     const isTechnical = parseTechnicalValue(technicalRaw);
+    const allowCodeBlocks = parseCodeBlocksValue(codeBlocksRaw);
     rows.push({
       title,
       author: authorRaw.length > 0 ? authorRaw : undefined,
       isbn: isbnRaw.length > 0 ? isbnRaw : undefined,
       domain: domainRaw.length > 0 ? domainRaw : undefined,
       isTechnical: isTechnical,
+      allowCodeBlocks,
     });
   });
   return rows;
@@ -281,13 +320,16 @@ function readRowsFromCsv(filePath: string): BatchRow[] {
     const isbnRaw = getCol(record, 'isbn');
     const domainRaw = getCol(record, 'domain', 'folder');
     const technicalRaw = getCol(record, 'technical', 'isTechnical', 'type');
+    const codeBlocksRaw = getCol(record, 'codeblocks', 'allowCodeBlocks', 'code_blocks');
     const isTechnical = parseTechnicalValue(technicalRaw);
+    const allowCodeBlocks = parseCodeBlocksValue(codeBlocksRaw);
     rows.push({
       title,
       author: authorRaw.length > 0 ? authorRaw : undefined,
       isbn: isbnRaw.length > 0 ? isbnRaw : undefined,
       domain: domainRaw.length > 0 ? domainRaw : undefined,
       isTechnical,
+      allowCodeBlocks,
     });
   }
   return rows;
@@ -311,12 +353,19 @@ async function processBook(
   isbn?: string,
   folders?: UploadFolders,
   isTechnicalOverride?: boolean,
+  allowCodeBlocksOverride?: boolean,
 ): Promise<void> {
   const bookStartMs = Date.now();
   const mem = process.memoryUsage();
   console.log(`[BATCH] (${index + 1}/${total}) Generating: "${title}" | heap=${Math.round(mem.heapUsed / 1024 / 1024)}MB`);
 
-  const { session, resumed } = getOrCreateSessionForBook(title, author, isbn, isTechnicalOverride);
+  const { session, resumed } = getOrCreateSessionForBook(
+    title,
+    author,
+    isbn,
+    isTechnicalOverride,
+    allowCodeBlocksOverride,
+  );
   session.batchIndex = index + 1;
   session.batchTotal = total;
   if (resumed) {
@@ -429,6 +478,14 @@ async function main(): Promise<void> {
   console.log(`[BATCH] Found ${titles.length} title(s). Already completed: ${alreadyDone.size}. Remaining: ${remainingRows.length}.`);
   if (retrying.length > 0) {
     console.log(`[BATCH] Retrying ${retrying.length} previously failed title(s).`);
+  }
+  if (alreadyDone.size > 0) {
+    console.log(`[BATCH] Resuming from checkpoint — ${alreadyDone.size} book(s) already done.`);
+  }
+  if (RESTART_AFTER > 0) {
+    console.log(`[BATCH] Self-restart enabled: will exit after ${RESTART_AFTER} book(s) this run (BATCH_RESTART_AFTER=${RESTART_AFTER}).`);
+  } else {
+    console.log('[BATCH] Self-restart disabled (BATCH_RESTART_AFTER=0).');
   }
   console.log('');
 
@@ -551,7 +608,16 @@ async function main(): Promise<void> {
       }
 
       try {
-        await processBook(row.title, globalIdx, titles.length, row.author, row.isbn, folders, row.isTechnical);
+        await processBook(
+          row.title,
+          globalIdx,
+          titles.length,
+          row.author,
+          row.isbn,
+          folders,
+          row.isTechnical,
+          row.allowCodeBlocks,
+        );
         progress.completed.push(row.title);
         const failedIdx = progress.failed.indexOf(row.title);
         if (failedIdx !== -1) progress.failed.splice(failedIdx, 1);
@@ -565,6 +631,21 @@ async function main(): Promise<void> {
         saveProgress(progress);
         sessionErrors.push({ title: row.title, error: errMsg });
         await closeBrowser().catch(() => {}); // fresh browser for next book
+      }
+
+      // Increment the per-run job counter (success or failure — both count)
+      _booksProcessedThisRun++;
+
+      // Self-restart: exit cleanly so Docker relaunches with fresh resources.
+      // Progress is already saved above, so the next run resumes seamlessly.
+      if (RESTART_AFTER > 0 && _booksProcessedThisRun >= RESTART_AFTER) {
+        console.log(`\n[BATCH] ⟳ Restart threshold reached (${_booksProcessedThisRun}/${RESTART_AFTER} books this run).`);
+        console.log('[BATCH] Cleaning up before exit...');
+        await closeBrowser().catch(() => {});
+        console.log(`[BATCH] Exiting with code 0 — container/process should auto-restart and resume from checkpoint.`);
+        console.log(`[BATCH] Progress file: ${PROGRESS_FILE}`);
+        console.log(`[BATCH] Completed so far: ${progress.completed.length} | Failed: ${progress.failed.length}\n`);
+        process.exit(0);
       }
 
       if (i < remainingRows.length - 1) {

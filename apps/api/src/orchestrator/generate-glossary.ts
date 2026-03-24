@@ -13,7 +13,7 @@ export async function generateGlossary(session: SessionState): Promise<string> {
 
   const result = await callLLM({
     model: LIGHT_MODEL,
-    systemPrompt: buildSystemPrompt(session.isTechnical),
+    systemPrompt: buildSystemPrompt(session.isTechnical, session.allowCodeBlocks),
     userPrompt,
     maxTokens: 800,
     temperature: 0.2,

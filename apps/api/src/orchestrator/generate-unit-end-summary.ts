@@ -23,7 +23,7 @@ export async function generateUnitEndSummary(
 
   const result = await callLLM({
     model: LIGHT_MODEL,
-    systemPrompt: buildSystemPrompt(session.isTechnical),
+    systemPrompt: buildSystemPrompt(session.isTechnical, session.allowCodeBlocks),
     userPrompt,
     maxTokens: 500,
     temperature: 0.2,

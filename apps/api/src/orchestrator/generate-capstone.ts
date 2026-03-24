@@ -28,7 +28,7 @@ export async function generateCapstones(session: SessionState): Promise<string> 
 
     const batchResult = await callLLM({
       model: session.model,
-      systemPrompt: buildSystemPrompt(session.isTechnical),
+      systemPrompt: buildSystemPrompt(session.isTechnical, session.allowCodeBlocks),
       userPrompt: batchPrompt,
       maxTokens: 5000,
       temperature: 0.35,
@@ -66,7 +66,7 @@ export async function generateCapstones(session: SessionState): Promise<string> 
 
     const result = await callLLM({
       model: session.model,
-      systemPrompt: buildSystemPrompt(session.isTechnical),
+      systemPrompt: buildSystemPrompt(session.isTechnical, session.allowCodeBlocks),
       userPrompt,
       maxTokens: 2600,
       temperature: 0.35,

@@ -21,7 +21,7 @@ export async function generateMicroSummary(
 
   const result = await callLLM({
     model: LIGHT_MODEL,
-    systemPrompt: buildSystemPrompt(session.isTechnical),
+    systemPrompt: buildSystemPrompt(session.isTechnical, session.allowCodeBlocks),
     userPrompt,
     maxTokens: 100,
     temperature: 0.1,

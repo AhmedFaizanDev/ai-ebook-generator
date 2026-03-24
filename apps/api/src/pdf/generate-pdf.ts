@@ -1,6 +1,6 @@
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { SessionState } from '@/lib/types';
-import { markdownToHtml, getHighlightCss } from './markdown-to-html';
+import { markdownToHtml, getHighlightCss, getMathCss } from './markdown-to-html';
 import { wrapInHtmlTemplate } from './html-template';
 import { getBrowser, closeBrowser } from './browser-pool';
 
@@ -62,6 +62,7 @@ export async function exportPDF(session: SessionState): Promise<void> {
 
   const fullHtml = markdownToHtml(session.finalMarkdown);
   const highlightCss = getHighlightCss();
+  const mathCss = getMathCss();
 
   if (!fullHtml || fullHtml.trim().length === 0) {
     throw new Error('Converted HTML is empty — cannot generate PDF');
@@ -101,7 +102,7 @@ export async function exportPDF(session: SessionState): Promise<void> {
   console.log(`[PDF] Rendering ${htmlChunks.length} chunks...`);
 
   for (let i = 0; i < htmlChunks.length; i++) {
-    const wrappedHtml = wrapInHtmlTemplate(htmlChunks[i], highlightCss);
+    const wrappedHtml = wrapInHtmlTemplate(htmlChunks[i], highlightCss + '\n' + mathCss);
     let lastErr: Error | null = null;
 
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
@@ -135,6 +136,68 @@ export async function exportPDF(session: SessionState): Promise<void> {
         await page.setContent(wrappedHtml, { waitUntil: 'load', timeout: 120_000 });
         // Short delay so images and layout settle before PDF (reduces "Target closed" in Docker)
         await new Promise((r) => setTimeout(r, 1500));
+
+        // Render Mermaid diagrams if any are present in this chunk
+        const mermaidCount = await page.evaluate(() => document.querySelectorAll('pre.mermaid').length);
+        if (mermaidCount > 0) {
+          try {
+            await page.addScriptTag({ url: 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js' });
+            const renderResult: { ok: boolean; rendered?: number; hidden?: number; error?: string } = await page.evaluate(async () => {
+              try {
+                const m = (window as any).mermaid;
+                if (!m) return { ok: false, error: 'mermaid global not found after script load' };
+                m.initialize({
+                  startOnLoad: false, theme: 'default', securityLevel: 'loose',
+                  flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' },
+                  sequence: { useMaxWidth: true },
+                });
+                await m.run({ querySelector: 'pre.mermaid' });
+
+                let rendered = 0;
+                let hidden = 0;
+                document.querySelectorAll('.mermaid-container').forEach((container) => {
+                  const svg = container.querySelector('svg');
+                  const text = (svg?.textContent || container.textContent || '').toLowerCase();
+                  if (!svg || text.includes('syntax error') || text.includes('parse error')) {
+                    (container as HTMLElement).style.display = 'none';
+                    hidden++;
+                    return;
+                  }
+                  const w = parseFloat(svg.getAttribute('width') || '0');
+                  const h = parseFloat(svg.getAttribute('height') || '0');
+                  if (w > 0 && h > 0) {
+                    if (!svg.getAttribute('viewBox')) {
+                      svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+                    }
+                    svg.removeAttribute('width');
+                    svg.removeAttribute('height');
+                    svg.style.maxWidth = '100%';
+                    svg.style.maxHeight = '420px';
+                    svg.style.display = 'block';
+                    svg.style.margin = '0 auto';
+                  }
+                  rendered++;
+                });
+                return { ok: true, rendered, hidden };
+              } catch (e: any) {
+                document.querySelectorAll('.mermaid-container').forEach((c) => {
+                  (c as HTMLElement).style.display = 'none';
+                });
+                return { ok: false, error: (e && e.message) ? e.message : String(e) };
+              }
+            });
+            if (renderResult.ok) {
+              console.log(`[PDF] Mermaid: ${renderResult.rendered} rendered, ${renderResult.hidden} hidden (chunk ${i + 1})`);
+            } else {
+              console.warn(`[PDF] Mermaid render error in chunk ${i + 1}: ${renderResult.error}`);
+            }
+            await new Promise((r) => setTimeout(r, 500));
+          } catch (mermaidErr) {
+            const msg = mermaidErr instanceof Error ? mermaidErr.message : JSON.stringify(mermaidErr);
+            console.warn(`[PDF] Mermaid script load failed for chunk ${i + 1}: ${msg}`);
+          }
+        }
+
         const pdfUint8 = await page.pdf(pdfOptions);
         pdfBuffers.push(Buffer.from(pdfUint8));
         await page.close().catch(() => {});

@@ -24,9 +24,11 @@ export interface SessionState {
   status: SessionStatus;
   topic: string;
   /** True when the topic is classified as technical (programming, engineering, sciences, etc.);
-   *  false for non-technical topics (fiction, history, philosophy, arts, etc.).
-   *  Controls whether code blocks are included in generated content. */
+   *  false for non-technical topics (fiction, history, philosophy, arts, etc.). */
   isTechnical: boolean;
+  /** Controls whether fenced code blocks are allowed in generated content.
+   *  Can be false even when `isTechnical` is true (e.g. physics/chemistry/math books). */
+  allowCodeBlocks: boolean;
   /** Optional author for cover; if not set, a random author is chosen from a fixed list. */
   author?: string;
   /** Optional ISBN from batch upload CSV (column C); shown on copyright page. */
@@ -73,12 +75,15 @@ export interface SubtopicContext {
   prevUnitSummary: string | null;
   prevSubtopicSummary: string | null;
   model: string;
-  /** Mirrors session.isTechnical — controls whether code blocks are included in the subtopic prompt. */
+  /** Mirrors session.isTechnical. */
   isTechnical: boolean;
+  /** Mirrors session.allowCodeBlocks for per-topic code block policy. */
+  allowCodeBlocks: boolean;
 }
 
 export interface VisualValidationResult {
   hasTable: boolean;
+  hasHtmlDiagram: boolean;
   hasAsciiDiagram: boolean;
   hasRequiredSubsection: boolean;
   pass: boolean;

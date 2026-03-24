@@ -218,7 +218,7 @@ export default function registerEditSection(router: Router): void {
 
       const result = await callLLM({
         model: LIGHT_MODEL,
-        systemPrompt: buildSystemPrompt(session.isTechnical),
+        systemPrompt: buildSystemPrompt(session.isTechnical, session.allowCodeBlocks),
         userPrompt,
         maxTokens: 2200,
         temperature: 0.4,

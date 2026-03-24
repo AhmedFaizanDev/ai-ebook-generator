@@ -26,7 +26,7 @@ export async function generateUnitExercises(
 
   const result1 = await callLLM({
     model: LIGHT_MODEL,
-    systemPrompt: buildSystemPrompt(session.isTechnical),
+    systemPrompt: buildSystemPrompt(session.isTechnical, session.allowCodeBlocks),
     userPrompt: prompt1,
     maxTokens: 1200,
     temperature: 0.3,
@@ -39,7 +39,7 @@ export async function generateUnitExercises(
 
   const result2 = await callLLM({
     model: LIGHT_MODEL,
-    systemPrompt: buildSystemPrompt(session.isTechnical),
+    systemPrompt: buildSystemPrompt(session.isTechnical, session.allowCodeBlocks),
     userPrompt: prompt2,
     maxTokens: 1200,
     temperature: 0.3,

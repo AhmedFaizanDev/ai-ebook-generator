@@ -65,6 +65,7 @@ export default function registerRegenerate(router: Router): void {
           prevSubtopicSummary: null,
           model: session.model,
           isTechnical: session.isTechnical,
+          allowCodeBlocks: session.allowCodeBlocks,
         },
         session,
       );

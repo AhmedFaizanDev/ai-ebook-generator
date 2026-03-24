@@ -80,3 +80,42 @@ const TECHNICAL_PATTERN = new RegExp(
 export function isTechnicalTopic(topic: string): boolean {
   return TECHNICAL_PATTERN.test(topic);
 }
+
+/**
+ * Returns `true` when a technical topic should include fenced program code blocks.
+ * This is intentionally narrower than `isTechnicalTopic`:
+ * - true: programming/software/computer/data/AI and code-centric engineering topics
+ * - false: technical-but-non-coding subjects such as physics, chemistry, and pure math
+ */
+export function shouldAllowCodeBlocks(topic: string, isTechnical: boolean): boolean {
+  if (!isTechnical) return false;
+
+  const t = topic.toLowerCase();
+
+  // Code-centric technical areas where snippets are pedagogically useful.
+  const codeForward = [
+    'programming', 'coding', 'software', 'computer science', 'developer',
+    'web development', 'app development', 'full stack', 'backend', 'frontend',
+    'algorithm', 'data structure', 'database', 'sql', 'api', 'devops',
+    'machine learning', 'deep learning', 'artificial intelligence', 'data science',
+    'python', 'javascript', 'typescript', 'java', 'c++', 'c#', 'go', 'rust',
+    'matlab', 'simulation code', 'numerical computing', 'embedded programming',
+    'firmware', 'robotics programming', 'control systems programming',
+  ];
+
+  // Technical subjects where equations are needed but program code should generally be avoided.
+  const equationForwardNoCode = [
+    'physics', 'chemistry', 'biochemistry', 'molecular biology', 'genetics',
+    'calculus', 'linear algebra', 'differential equation', 'trigonometry',
+    'probability', 'statistics', 'number theory', 'topology',
+    'thermodynamics', 'quantum mechanics',
+  ];
+
+  if (codeForward.some((kw) => t.includes(kw))) return true;
+  if (equationForwardNoCode.some((kw) => t.includes(kw))) return false;
+
+  // Engineering can be mixed; default to allowing code for engineering-labelled topics.
+  if (t.includes('engineering')) return true;
+
+  return false;
+}
