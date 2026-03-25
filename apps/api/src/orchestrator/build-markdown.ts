@@ -24,6 +24,34 @@ function sanitizeMarkdown(md: string): string {
     .trim();
 }
 
+function sanitizeBibliographyGibberish(md: string): string {
+  if (!md || typeof md !== 'string') return md;
+  const lines = md.split('\n');
+  const cleaned: string[] = [];
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    const plain = line.replace(/^[-*]\s+/, '').trim();
+
+    const hasInitialSpam = /(?:\b[A-Z]\.\s*,?\s*){12,}/.test(plain);
+    const tooLong = plain.length > 320;
+
+    let lowDiversity = false;
+    const words = plain.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+    if (words.length >= 20) {
+      const uniqueRatio = new Set(words).size / words.length;
+      lowDiversity = uniqueRatio < 0.35;
+    }
+
+    if (hasInitialSpam || tooLong || lowDiversity) {
+      continue;
+    }
+    cleaned.push(rawLine);
+  }
+
+  return cleaned.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 const AUTHORS = [
   'Dr. M.S. Sadiq Sait, Ph.D',
   'Andrea Sait, M.Sc. (IT), M.Sc. (AI), M.Sc. (Psy), MBA',
@@ -317,7 +345,11 @@ function assembleParts(session: SessionState, getSubtopic: (u: number, s: number
 
   // 8. Bibliography (sanitize to remove junk/artifact characters common in LLM output)
   if (session.bibliographyMarkdown) {
-    parts.push(sanitizeMarkdown(stripLlmHtmlArtifacts(session.bibliographyMarkdown)));
+    parts.push(
+      sanitizeBibliographyGibberish(
+        sanitizeMarkdown(stripLlmHtmlArtifacts(session.bibliographyMarkdown)),
+      ),
+    );
   }
 
   return parts.join('\n\n');

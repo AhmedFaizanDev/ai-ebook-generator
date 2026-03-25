@@ -9,11 +9,15 @@ ${outline}
 Generate a professional Bibliography and Recommended Reading section. Start with # Bibliography.
 
 Requirements:
-1. List 5–10 references organized under subsection headings: ### Books, ### Research Papers & Standards, ### Online Resources
-2. Each entry must use a consistent citation format: Author(s), "Title," Publisher/Source, Year.
-3. References must be plausible and relevant to "${topic}" — use real, widely-known works in this field where possible
-4. Include a mix of foundational texts, modern references, and official documentation/standards
-5. Do NOT add a "Summary" subsection or any summary paragraph within the Bibliography section — only reference lists under the subsection headings above.
+1. Use exactly these subsection headings in this order: ### Books, ### Research Papers & Standards, ### Online Resources
+2. Under each subsection, use Markdown bullet list entries only ("- " prefix)
+3. List 5–12 total references
+4. Each entry must use this citation format: Author(s), "Title," Publisher/Source, Year.
+5. Every entry must include a 4-digit year (YYYY)
+6. References must be plausible and relevant to "${topic}" — use real, widely-known works in this field where possible
+7. Include a mix of foundational texts, modern references, and official documentation/standards
+8. Do NOT add a "Summary" subsection or any paragraph prose within the Bibliography section — only reference lists under the required subsection headings.
+9. Never repeat initials, never output gibberish, and never use placeholder spam.
 
-Write 400–600 words total. No preamble. Output clean text only: use standard letters, numbers, and punctuation only — no control characters, replacement symbols (�), or stray Unicode. Do NOT exceed 600 words.`;
+Write 180–320 words total. No preamble. Output clean text only: use standard letters, numbers, and punctuation only — no control characters, replacement symbols (�), stray Unicode, code blocks, or HTML.`;
 }

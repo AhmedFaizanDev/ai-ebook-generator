@@ -60,3 +60,47 @@ D) Option
 
 Tone: formal, academic. ~${wordCap} words. Do NOT exceed ${wordCap} words.`;
 }
+
+export function buildUnitExercisesRepairPrompt(
+  topic: string,
+  unitIndex: number,
+  unitTitle: string,
+  subtopicTitles: string[],
+  unitSummary: string,
+  issues: string[],
+  flawedMarkdown: string,
+): string {
+  const subtopicList = subtopicTitles
+    .map((t, i) => `${unitIndex + 1}.${i + 1} ${t}`)
+    .join('\n');
+
+  const issuesBlock = issues.map((r, i) => `${i + 1}. ${r}`).join('\n');
+
+  return `Book: "${topic}"
+Unit ${unitIndex + 1}: "${unitTitle}"
+
+Subtopics:
+${subtopicList}
+
+Unit summary:
+${unitSummary}
+
+Your previous Exercises output failed automated quality checks. Rewrite the COMPLETE section from scratch.
+
+Detected issues:
+${issuesBlock}
+
+Hard requirements (all must be satisfied):
+- Start with ## Exercises.
+- Exactly 20 questions, numbered **1.** through **20.** in bold (format **N. Question text?**).
+- Each question: blank line, then A) B) C) D) on separate lines (normal weight, not bold).
+- After the four options, a line **Answer: X** where X is A, B, C, or D.
+- No truncated questions; every question must have four options and an answer.
+
+Flawed output to replace:
+---
+${flawedMarkdown}
+---
+
+Output only the fixed full Exercises section in Markdown. ~1000 words. Do NOT exceed 1000 words.`;
+}
