@@ -36,17 +36,38 @@ function escapeHtml(text: string): string {
 
 // ── Markdown pre-processing ──
 
+/**
+ * Ensure fences have blank-line boundaries and fix unclosed fences.
+ * Uses line-by-line tracking instead of regex fence counting (which miscounts
+ * when ``` appears inside indented blocks or table cells).
+ */
 function normalizeMarkdownStructure(md: string): string {
   if (!md || typeof md !== 'string') return md;
   let out = md.replace(/\r\n/g, '\n');
 
+  // Blank-line boundaries around fences
   out = out.replace(/([^\n])(```[^\n]*\n)/g, '$1\n$2');
   out = out.replace(/([^\n])\n(```)/g, '$1\n\n$2');
   out = out.replace(/(```)\n([^\n])/g, '$1\n\n$2');
 
-  const fenceCount = (out.match(/^\s*```/gm) ?? []).length;
-  if (fenceCount % 2 !== 0) {
-    out = `${out}\n\`\`\`\n`;
+  // Line-by-line fence tracking to find unclosed fences
+  const lines = out.split('\n');
+  let inFence = false;
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (!inFence) {
+      if (trimmed.startsWith('```')) {
+        inFence = true;
+      }
+    } else {
+      if (trimmed === '```') {
+        inFence = false;
+      }
+    }
+  }
+  // If we're still inside a fence at end-of-input, close it
+  if (inFence) {
+    out += '\n```\n';
   }
 
   // Ensure headings always have blank line before them
@@ -55,17 +76,45 @@ function normalizeMarkdownStructure(md: string): string {
   return out;
 }
 
-function stripHtmlOutputPairs(markdown: string): string {
+/**
+ * Fence-aware stripping of ```html, ```output, and ```html+output pairs.
+ * Walks line-by-line so it never eats the closing ``` of a different block.
+ */
+function stripBannedFences(markdown: string): string {
   if (!markdown || typeof markdown !== 'string') return markdown;
-  return markdown.replace(
-    /```html?\s*\n[\s\S]*?\n```\s*\n```output\s*\n[\s\S]*?\n```/gi,
-    '',
-  );
-}
+  const bannedLangs = /^(html?|output|xml|svg|xhtml)$/i;
+  const lines = markdown.split('\n');
+  const out: string[] = [];
+  let inFence = false;
+  let fenceLang = '';
+  let isBanned = false;
 
-function stripSurvivingHtmlFences(markdown: string): string {
-  if (!markdown || typeof markdown !== 'string') return markdown;
-  return markdown.replace(/```\s*html?\s*\n[\s\S]*?\n```/gi, '');
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    if (!inFence) {
+      const m = trimmed.match(/^```(\S*)/);
+      if (m) {
+        inFence = true;
+        fenceLang = m[1] || '';
+        isBanned = bannedLangs.test(fenceLang);
+        if (!isBanned) out.push(line);
+      } else {
+        out.push(line);
+      }
+    } else {
+      if (trimmed === '```') {
+        inFence = false;
+        if (!isBanned) out.push(line);
+        isBanned = false;
+        fenceLang = '';
+      } else {
+        if (!isBanned) out.push(line);
+      }
+    }
+  }
+
+  return out.join('\n');
 }
 
 /**
@@ -105,7 +154,11 @@ function fixGfmTables(md: string): string {
       const nextLine = i + 1 < lines.length ? lines[i + 1].trim() : '';
       const nextIsSep = /^\|[\s:-]+(\|[\s:-]+)+\|?$/.test(nextLine);
       const nextIsPipe = nextLine.startsWith('|') && nextLine.endsWith('|');
-      if (nextIsPipe && !nextIsSep) {
+      const prevOut = out.length > 0 ? out[out.length - 1].trim() : '';
+      const prevIsPipe = prevOut.startsWith('|') && prevOut.endsWith('|');
+      const prevIsSep = /^\|[\s:-]+(\|[\s:-]+)+\|?$/.test(prevOut);
+      // Only inject a separator at the START of a table block, never between data rows.
+      if (nextIsPipe && !nextIsSep && !prevIsPipe && !prevIsSep) {
         const cols = trimmed.split('|').filter((c) => c.trim()).length;
         if (out.length > 0 && out[out.length - 1].trim() !== '' && !out[out.length - 1].trim().startsWith('|')) {
           out.push('');
@@ -192,32 +245,70 @@ function createMarkedInstance(): Marked {
 
 function preprocessMarkdown(md: string): string {
   let out = normalizeMarkdownStructure(md);
-  out = stripHtmlOutputPairs(out);
-  out = stripSurvivingHtmlFences(out);
+  out = stripBannedFences(out);
   out = fixGfmTables(out);
   return out;
 }
 
 // ── Post-render validation ──
 
-const RAW_MD_PATTERNS = [
-  /<p>\s*```/,                        // fenced code leaked
-  /<p>\s*#{1,6}\s/,                   // heading became paragraph
-  /<p>\s*\|[^|]+\|[^|]+\|/,          // pipe table became paragraph
-];
-
 function detectRawMarkdownInHtml(html: string): boolean {
-  return RAW_MD_PATTERNS.some((re) => re.test(html));
+  return (
+    /<p>\s*```/.test(html) ||
+    /<p>\s*#{1,6}\s/.test(html) ||
+    /<p>\s*\|[^|]+\|[^|]+\|/.test(html)
+  );
 }
 
 /**
- * If raw markdown leaked through (headings, tables, bold), this re-parses
- * individual <p> blocks that contain raw markdown syntax.
+ * Detect markdown syntax trapped inside <pre><code> blocks.
+ * This happens when an unclosed fence swallows subsequent prose.
+ * A real code block won't contain ### headings or **bold** patterns.
  */
+function detectSwallowedContentInCodeBlocks(html: string): boolean {
+  const codeBlockRe = /<pre><code[^>]*>([\s\S]*?)<\/code><\/pre>/gi;
+  let m: RegExpExecArray | null;
+  codeBlockRe.lastIndex = 0;
+  while ((m = codeBlockRe.exec(html)) !== null) {
+    const content = m[1];
+    if (content.length > 500) {
+      const hasHeading = /^#{1,6}\s/m.test(content) || /#{1,6}\s/.test(content.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>'));
+      const hasBold = /\*\*[^*]+\*\*/.test(content);
+      const hasTable = /\|[^|]+\|[^|]+\|/.test(content);
+      if ((hasHeading && hasBold) || (hasHeading && hasTable)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Extract content trapped in oversized <pre><code> blocks that clearly
+ * contain markdown (headings, bold, tables) back out and re-parse them.
+ */
+function repairSwallowedCodeBlocks(html: string, marked: Marked): string {
+  return html.replace(
+    /<pre><code[^>]*>([\s\S]*?)<\/code><\/pre>/gi,
+    (full, content: string) => {
+      if (content.length < 500) return full;
+      const decoded = content
+        .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+      const hasHeading = /^#{1,6}\s/m.test(decoded);
+      const hasBold = /\*\*[^*]+\*\*/.test(decoded);
+      const hasTable = /\|[^|]+\|[^|]+\|/.test(decoded);
+      if ((hasHeading && hasBold) || (hasHeading && hasTable)) {
+        console.warn('[render] Repairing <pre> block that swallowed markdown content');
+        return marked.parse(decoded) as string;
+      }
+      return full;
+    },
+  );
+}
+
 function repairLeakedMarkdown(html: string, marked: Marked): string {
   let repaired = html;
 
-  // Re-parse <p> blocks containing raw markdown headings
   repaired = repaired.replace(
     /<p>\s*(#{1,6})\s+(.*?)<\/p>/g,
     (_m, hashes: string, text: string) => {
@@ -227,7 +318,6 @@ function repairLeakedMarkdown(html: string, marked: Marked): string {
     },
   );
 
-  // Re-parse <p> blocks that are raw pipe tables
   repaired = repaired.replace(
     /<p>(\|[^<]+(?:\n\|[^<]+)+)<\/p>/g,
     (_m, tableBlock: string) => {
@@ -236,7 +326,6 @@ function repairLeakedMarkdown(html: string, marked: Marked): string {
     },
   );
 
-  // Re-parse <p> blocks with raw **bold** markers
   repaired = repaired.replace(
     /<p>((?:[^<]|<(?!\/p>))*\*\*[^<]*)<\/p>/g,
     (_m, inner: string) => {
@@ -265,14 +354,19 @@ export function segmentsToHtml(segments: ContentSegment[]): string {
       htmlParts.push(seg.content);
     } else {
       const preprocessed = preprocessMarkdown(seg.content);
-      const rendered = marked.parse(preprocessed) as string;
+      let rendered = marked.parse(preprocessed) as string;
+
+      if (detectSwallowedContentInCodeBlocks(rendered)) {
+        console.warn('[render] Content swallowed by code block — repairing');
+        rendered = repairSwallowedCodeBlocks(rendered, marked);
+      }
 
       if (detectRawMarkdownInHtml(rendered)) {
         console.warn('[render] Raw markdown detected in segment — applying repair pass');
-        htmlParts.push(repairLeakedMarkdown(rendered, marked));
-      } else {
-        htmlParts.push(rendered);
+        rendered = repairLeakedMarkdown(rendered, marked);
       }
+
+      htmlParts.push(rendered);
     }
   }
 

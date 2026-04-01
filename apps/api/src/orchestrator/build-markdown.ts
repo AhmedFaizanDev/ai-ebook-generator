@@ -190,111 +190,97 @@ ${catalogBlock}
   return cover + '\n' + copyright;
 }
 
-/**
- * Strip ALL fenced ```html / ```htm blocks unconditionally.
- * These never render correctly in PDF/DOCX — they produce empty bordered boxes.
- * Any readable text inside is extracted as plain prose so meaning is preserved.
- */
-function stripAllHtmlFences(md: string): string {
-  if (!md || typeof md !== 'string') return md;
-  return md.replace(/```\s*html?\s*\n([\s\S]*?)\n```/gi, (_match, inner: string) => {
-    let t = inner
-      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
-      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '');
-    t = t.replace(/<br\s*\/?>/gi, '\n');
-    t = t.replace(/<\/(p|div|h[1-6]|li|tr)\s*>/gi, '\n');
-    t = t.replace(/<[^>]+>/g, '');
-    t = t
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"');
-    const plain = t
-      .split(/\n+/)
-      .map((line) => line.replace(/\s+/g, ' ').trim())
-      .filter(Boolean)
-      .join('\n\n');
-    return plain ? `\n\n${plain}\n\n` : '\n\n';
-  });
+// ── Fence-aware helpers ──
+
+/** Languages whose fenced blocks should be removed entirely */
+const BANNED_FENCE_LANGS = /^(html?|xml|svg|xhtml|output)$/i;
+
+/** Languages whose fenced blocks are kept for rendering */
+const KEPT_FENCE_RE = /^(python|javascript|typescript|java|c|cpp|csharp|go|rust|ruby|php|swift|kotlin|sql|bash|sh|shell|json|yaml|css|r|scala|perl|lua|powershell|text)$/i;
+
+interface FencedBlock {
+  lang: string;
+  body: string[];
+  startIdx: number;
 }
 
 /**
- * Apply a string transform only outside fenced code blocks (``` ... ```),
- * so we do not strip tags that are part of ```html / ```svg source.
+ * Parse markdown line-by-line into fenced blocks and prose regions.
+ * Returns an array of segments: { fenced: true, lang, lines } or { fenced: false, lines }.
+ * This NEVER uses greedy regex across fence boundaries.
  */
-function mapOutsideCodeFences(md: string, mapFn: (s: string) => string): string {
-  const fenceRe = /^```[^\n]*\n[\s\S]*?\n```\s*(?=\n|$)/gm;
-  let out = '';
-  let last = 0;
-  let m: RegExpExecArray | null;
-  fenceRe.lastIndex = 0;
-  while ((m = fenceRe.exec(md)) !== null) {
-    out += mapFn(md.slice(last, m.index));
-    out += m[0];
-    last = m.index + m[0].length;
+function parseFences(md: string): Array<{ fenced: boolean; lang: string; lines: string[] }> {
+  const result: Array<{ fenced: boolean; lang: string; lines: string[] }> = [];
+  const lines = md.split('\n');
+  let proseBuf: string[] = [];
+  let currentFence: FencedBlock | null = null;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    if (!currentFence) {
+      const fenceMatch = trimmed.match(/^```(\S*)/);
+      if (fenceMatch) {
+        if (proseBuf.length > 0) {
+          result.push({ fenced: false, lang: '', lines: proseBuf });
+          proseBuf = [];
+        }
+        currentFence = { lang: fenceMatch[1] || '', body: [], startIdx: i };
+      } else {
+        proseBuf.push(line);
+      }
+    } else {
+      if (trimmed === '```') {
+        result.push({ fenced: true, lang: currentFence.lang, lines: currentFence.body });
+        currentFence = null;
+      } else {
+        currentFence.body.push(line);
+      }
+    }
   }
-  out += mapFn(md.slice(last));
-  return out;
+
+  // Unclosed fence: flush body back as prose (the fence was broken)
+  if (currentFence) {
+    proseBuf.push('```' + currentFence.lang);
+    proseBuf.push(...currentFence.body);
+  }
+  if (proseBuf.length > 0) {
+    result.push({ fenced: false, lang: '', lines: proseBuf });
+  }
+
+  return result;
 }
 
-function stripRawHtmlTagsOutsideFences(md: string): string {
-  return mapOutsideCodeFences(md, (segment) => {
-    let cleaned = segment;
-    const blockPair = /<(svg|canvas|iframe|section|article)\b[^>]*>[\s\S]*?<\/\1>/gi;
-    for (let i = 0; i < 25; i++) {
-      const next = cleaned.replace(blockPair, '');
-      if (next === cleaned) break;
-      cleaned = next;
-    }
-    for (let i = 0; i < 35; i++) {
-      const next = cleaned.replace(/<div\b[^>]*>[\s\S]*?<\/div>/gi, '');
-      if (next === cleaned) break;
-      cleaned = next;
-    }
-    for (let i = 0; i < 25; i++) {
-      const next = cleaned.replace(/<span\b[^>]*>[\s\S]*?<\/span>/gi, '');
-      if (next === cleaned) break;
-      cleaned = next;
-    }
-    cleaned = cleaned.replace(
-      /<\/?(?:img|br|hr|input|embed|object|wbr|source|track|col|meta|link|base|area)\b[^>]*\/?>/gi,
-      '',
-    );
-    return cleaned;
-  });
+function htmlToPlainText(html: string): string {
+  let t = html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '');
+  t = t.replace(/<br\s*\/?>/gi, '\n');
+  t = t.replace(/<\/(p|div|h[1-6]|li|tr)\s*>/gi, '\n');
+  t = t.replace(/<[^>]+>/g, '');
+  t = t.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"');
+  return t.split(/\n+/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean).join('\n\n');
 }
 
-/**
- * Strip HTML/markup from LLM-generated markdown chunks only (not cover/TOC).
- * Removes fenced html/xml/svg blocks, raw tags (div, svg, etc.), and diagram-ish headings.
- * Preserves GFM pipe tables and fenced code blocks that `marked` needs.
- */
-function stripLlmHtmlArtifacts(md: string): string {
-  if (!md || typeof md !== 'string') return md;
-  let cleaned = md;
-
-  // Strip ALL ```html fences and their paired ```output blocks — they never render correctly in PDF/DOCX
-  cleaned = cleaned.replace(
-    /```html?\s*\n[\s\S]*?\n```\s*\n```\s*output\s*\n[\s\S]*?\n```/gi,
-    '',
-  );
-  cleaned = stripAllHtmlFences(cleaned);
-
-  cleaned = cleaned.replace(/```(?:xml|svg|xhtml)\s*\n[\s\S]*?\n```/gi, '');
-  cleaned = cleaned.replace(/```\s*output\s*\n[\s\S]*?\n```/gi, '');
-
+function stripRawHtmlFromProse(text: string): string {
+  let cleaned = text;
   cleaned = cleaned.replace(/<!--[\s\S]*?-->/g, '');
   cleaned = cleaned.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '');
   cleaned = cleaned.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
-
   cleaned = cleaned.replace(/<div\s+class="rendered-html-output"[^>]*>[\s\S]*?<\/div>/gi, '');
-
-  cleaned = stripRawHtmlTagsOutsideFences(cleaned);
-
+  const blockPair = /<(svg|canvas|iframe|section|article)\b[^>]*>[\s\S]*?<\/\1>/gi;
+  for (let i = 0; i < 25; i++) { const next = cleaned.replace(blockPair, ''); if (next === cleaned) break; cleaned = next; }
+  for (let i = 0; i < 35; i++) { const next = cleaned.replace(/<div\b[^>]*>[\s\S]*?<\/div>/gi, ''); if (next === cleaned) break; cleaned = next; }
+  for (let i = 0; i < 25; i++) { const next = cleaned.replace(/<span\b[^>]*>[\s\S]*?<\/span>/gi, ''); if (next === cleaned) break; cleaned = next; }
+  cleaned = cleaned.replace(/<\/?(?:img|br|hr|input|embed|object|wbr|source|track|col|meta|link|base|area)\b[^>]*\/?>/gi, '');
   cleaned = cleaned.replace(/<div\b[^>]*page-break[^>]*>\s*<\/div>/gi, '');
   cleaned = cleaned.replace(/^<\/(?:div|span|section|article)>\s*$/gim, '');
+  return cleaned;
+}
 
+function stripDiagramHeadings(text: string): string {
+  let cleaned = text;
   cleaned = cleaned.replace(
     /^#{1,3}\s+(?:Example of .+(?:Implementation|Layout|Output|Rendering)|(?:Rendered|HTML|Expected)\s+Output|(?:Visual|Diagram)\s+(?:Representation|Illustration|Example)).*$\n*/gim,
     '',
@@ -303,9 +289,45 @@ function stripLlmHtmlArtifacts(md: string): string {
     /^(?:The (?:following|expected|above) (?:code snippet|layout|output|HTML|example|diagram)[\s\S]*?\.)\s*$/gm,
     '',
   );
-
-  cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
   return cleaned;
+}
+
+/**
+ * Fence-aware stripping of LLM artifacts. Processes code fences one at a time
+ * so we NEVER accidentally eat the closing ``` of a legitimate code block.
+ */
+function stripLlmHtmlArtifacts(md: string): string {
+  if (!md || typeof md !== 'string') return md;
+
+  const segments = parseFences(md);
+  const outputParts: string[] = [];
+
+  for (const seg of segments) {
+    if (!seg.fenced) {
+      let prose = seg.lines.join('\n');
+      prose = stripRawHtmlFromProse(prose);
+      prose = stripDiagramHeadings(prose);
+      outputParts.push(prose);
+    } else {
+      const langLower = seg.lang.toLowerCase();
+
+      // Banned fences: html, xml, svg, output — remove entirely (extract text from html)
+      if (BANNED_FENCE_LANGS.test(langLower)) {
+        if (/^html?$/i.test(langLower)) {
+          const plain = htmlToPlainText(seg.lines.join('\n'));
+          if (plain) outputParts.push('\n\n' + plain + '\n\n');
+        }
+        continue;
+      }
+
+      // Kept fences: real programming languages — preserve with proper fence markers
+      outputParts.push('```' + seg.lang + '\n' + seg.lines.join('\n') + '\n```');
+    }
+  }
+
+  let result = outputParts.join('\n');
+  result = result.replace(/\n{3,}/g, '\n\n');
+  return result;
 }
 
 /**
