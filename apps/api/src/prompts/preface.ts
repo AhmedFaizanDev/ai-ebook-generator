@@ -18,5 +18,5 @@ Include:
 4. How to get the most out of this book
 5. Acknowledgments (generic — thank the reader and the technical community)
 
-Write in first-person plural ("we"). Tone: welcoming but professional. No filler. Do NOT exceed 600 words.`;
+Write in first-person plural ("we"). Tone: welcoming but professional. No filler. Do NOT include raw HTML, \`\`\`html blocks, SVG, or diagram markup. Do NOT exceed 600 words.`;
 }

@@ -21,5 +21,5 @@ Include:
 2. Assumed prerequisites or prior knowledge the reader should have
 3. 3–5 explicit learning objectives as a numbered list, prefixed with "By the end of this unit, learners will be able to:"
 
-Tone: formal, neutral, suitable for undergraduate learners. No conversational language. No filler. Do NOT exceed 400 words.`;
+Tone: formal, neutral, suitable for undergraduate learners. No conversational language. No filler. Do NOT include raw HTML, \`\`\`html blocks, SVG, or diagram markup. Do NOT exceed 400 words.`;
 }

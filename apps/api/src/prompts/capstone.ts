@@ -23,7 +23,7 @@ Capstone ${index + 1}/2: "${capstoneTitle}"
 Book context (unit summaries):
 ${summariesBlock}
 
-Write 1600–1900 words as ${specDescription}. Start with ## Capstone ${index + 1}: ${capstoneTitle}. Use ### sub-sections numbered Capstone ${index + 1}.1, Capstone ${index + 1}.2, etc. Include: ${contentGuidance} Reference specific techniques from the book where applicable. Do NOT exceed 1900 words.`;
+Write 1600–1900 words as ${specDescription}. Start with ## Capstone ${index + 1}: ${capstoneTitle}. Use ### sub-sections numbered Capstone ${index + 1}.1, Capstone ${index + 1}.2, etc. Include: ${contentGuidance} Reference specific techniques from the book where applicable. Do NOT include raw HTML, \`\`\`html blocks, SVG, or diagram markup — use GFM tables and prose only. Do NOT exceed 1900 words.`;
 }
 
 export function buildBatchedCapstonePrompt(
@@ -54,5 +54,5 @@ Write ${capstoneTitles.length} capstone projects, each 1600–1900 words. Separa
 Capstone titles:
 ${titlesBlock}
 
-For each capstone: start with ## Capstone N: Title. Use ### sub-sections numbered Capstone N.1, Capstone N.2, etc. ${contentGuidance} Reference specific techniques from the book. Do NOT exceed 1900 words per capstone.`;
+For each capstone: start with ## Capstone N: Title. Use ### sub-sections numbered Capstone N.1, Capstone N.2, etc. ${contentGuidance} Reference specific techniques from the book. Do NOT include raw HTML, \`\`\`html blocks, SVG, or diagram markup — use GFM tables and prose only. Do NOT exceed 1900 words per capstone.`;
 }

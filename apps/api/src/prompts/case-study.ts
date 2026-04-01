@@ -23,7 +23,7 @@ Case Study ${index + 1}: "${caseStudyTitle}"
 Book context (unit summaries):
 ${summariesBlock}
 
-Write 1600–1900 words as ${retroDescription}. Start with ## Case Study ${index + 1}: ${caseStudyTitle}. Use ### sub-sections numbered Case Study ${index + 1}.1, Case Study ${index + 1}.2, etc. Include: ${contentGuidance} Reference specific techniques from the book where applicable. Do NOT exceed 1900 words.`;
+Write 1600–1900 words as ${retroDescription}. Start with ## Case Study ${index + 1}: ${caseStudyTitle}. Use ### sub-sections numbered Case Study ${index + 1}.1, Case Study ${index + 1}.2, etc. Include: ${contentGuidance} Reference specific techniques from the book where applicable. Do NOT include raw HTML, \`\`\`html blocks, SVG, or diagram markup — use GFM tables and prose only. Do NOT exceed 1900 words.`;
 }
 
 export function buildBatchedCaseStudyPrompt(
@@ -54,5 +54,5 @@ Write ${caseStudyTitles.length} case studies, each 1600–1900 words. Separate t
 Case study titles:
 ${titlesBlock}
 
-For each case study: start with ## Case Study N: Title. Use ### sub-sections numbered Case Study N.1, Case Study N.2, etc. ${contentGuidance} Reference specific techniques from the book. Do NOT exceed 1900 words per case study.`;
+For each case study: start with ## Case Study N: Title. Use ### sub-sections numbered Case Study N.1, Case Study N.2, etc. ${contentGuidance} Reference specific techniques from the book. Do NOT include raw HTML, \`\`\`html blocks, SVG, or diagram markup — use GFM tables and prose only. Do NOT exceed 1900 words per case study.`;
 }

@@ -191,18 +191,96 @@ ${catalogBlock}
 }
 
 /**
+ * Strip ALL fenced ```html / ```htm blocks unconditionally.
+ * These never render correctly in PDF/DOCX — they produce empty bordered boxes.
+ * Any readable text inside is extracted as plain prose so meaning is preserved.
+ */
+function stripAllHtmlFences(md: string): string {
+  if (!md || typeof md !== 'string') return md;
+  return md.replace(/```\s*html?\s*\n([\s\S]*?)\n```/gi, (_match, inner: string) => {
+    let t = inner
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '');
+    t = t.replace(/<br\s*\/?>/gi, '\n');
+    t = t.replace(/<\/(p|div|h[1-6]|li|tr)\s*>/gi, '\n');
+    t = t.replace(/<[^>]+>/g, '');
+    t = t
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"');
+    const plain = t
+      .split(/\n+/)
+      .map((line) => line.replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+      .join('\n\n');
+    return plain ? `\n\n${plain}\n\n` : '\n\n';
+  });
+}
+
+/**
+ * Apply a string transform only outside fenced code blocks (``` ... ```),
+ * so we do not strip tags that are part of ```html / ```svg source.
+ */
+function mapOutsideCodeFences(md: string, mapFn: (s: string) => string): string {
+  const fenceRe = /^```[^\n]*\n[\s\S]*?\n```\s*(?=\n|$)/gm;
+  let out = '';
+  let last = 0;
+  let m: RegExpExecArray | null;
+  fenceRe.lastIndex = 0;
+  while ((m = fenceRe.exec(md)) !== null) {
+    out += mapFn(md.slice(last, m.index));
+    out += m[0];
+    last = m.index + m[0].length;
+  }
+  out += mapFn(md.slice(last));
+  return out;
+}
+
+function stripRawHtmlTagsOutsideFences(md: string): string {
+  return mapOutsideCodeFences(md, (segment) => {
+    let cleaned = segment;
+    const blockPair = /<(svg|canvas|iframe|section|article)\b[^>]*>[\s\S]*?<\/\1>/gi;
+    for (let i = 0; i < 25; i++) {
+      const next = cleaned.replace(blockPair, '');
+      if (next === cleaned) break;
+      cleaned = next;
+    }
+    for (let i = 0; i < 35; i++) {
+      const next = cleaned.replace(/<div\b[^>]*>[\s\S]*?<\/div>/gi, '');
+      if (next === cleaned) break;
+      cleaned = next;
+    }
+    for (let i = 0; i < 25; i++) {
+      const next = cleaned.replace(/<span\b[^>]*>[\s\S]*?<\/span>/gi, '');
+      if (next === cleaned) break;
+      cleaned = next;
+    }
+    cleaned = cleaned.replace(
+      /<\/?(?:img|br|hr|input|embed|object|wbr|source|track|col|meta|link|base|area)\b[^>]*\/?>/gi,
+      '',
+    );
+    return cleaned;
+  });
+}
+
+/**
  * Strip HTML/markup from LLM-generated markdown chunks only (not cover/TOC).
- * Removes fenced html/xml/svg blocks, raw tags (div, table, svg, etc.), and diagram-ish headings.
+ * Removes fenced html/xml/svg blocks, raw tags (div, svg, etc.), and diagram-ish headings.
+ * Preserves GFM pipe tables and fenced code blocks that `marked` needs.
  */
 function stripLlmHtmlArtifacts(md: string): string {
   if (!md || typeof md !== 'string') return md;
   let cleaned = md;
 
-  // Fenced markup blocks; html may be followed by ```output
+  // Strip ALL ```html fences and their paired ```output blocks — they never render correctly in PDF/DOCX
   cleaned = cleaned.replace(
-    /```html?\s*\n[\s\S]*?\n```(\s*\n```\s*output\s*\n[\s\S]*?\n```)?/gi,
+    /```html?\s*\n[\s\S]*?\n```\s*\n```\s*output\s*\n[\s\S]*?\n```/gi,
     '',
   );
+  cleaned = stripAllHtmlFences(cleaned);
+
   cleaned = cleaned.replace(/```(?:xml|svg|xhtml)\s*\n[\s\S]*?\n```/gi, '');
   cleaned = cleaned.replace(/```\s*output\s*\n[\s\S]*?\n```/gi, '');
 
@@ -212,32 +290,10 @@ function stripLlmHtmlArtifacts(md: string): string {
 
   cleaned = cleaned.replace(/<div\s+class="rendered-html-output"[^>]*>[\s\S]*?<\/div>/gi, '');
 
-  const blockPair = /<(svg|canvas|iframe|table|section|article)\b[^>]*>[\s\S]*?<\/\1>/gi;
-  for (let i = 0; i < 25; i++) {
-    const next = cleaned.replace(blockPair, '');
-    if (next === cleaned) break;
-    cleaned = next;
-  }
-
-  for (let i = 0; i < 35; i++) {
-    const next = cleaned.replace(/<div\b[^>]*>[\s\S]*?<\/div>/gi, '');
-    if (next === cleaned) break;
-    cleaned = next;
-  }
-
-  for (let i = 0; i < 25; i++) {
-    const next = cleaned.replace(/<span\b[^>]*>[\s\S]*?<\/span>/gi, '');
-    if (next === cleaned) break;
-    cleaned = next;
-  }
-
-  cleaned = cleaned.replace(
-    /<\/?(?:img|br|hr|input|embed|object|wbr|source|track|col|meta|link|base|area)\b[^>]*\/?>/gi,
-    '',
-  );
+  cleaned = stripRawHtmlTagsOutsideFences(cleaned);
 
   cleaned = cleaned.replace(/<div\b[^>]*page-break[^>]*>\s*<\/div>/gi, '');
-  cleaned = cleaned.replace(/^<\/(?:div|span|table|section|article)>\s*$/gim, '');
+  cleaned = cleaned.replace(/^<\/(?:div|span|section|article)>\s*$/gim, '');
 
   cleaned = cleaned.replace(
     /^#{1,3}\s+(?:Example of .+(?:Implementation|Layout|Output|Rendering)|(?:Rendered|HTML|Expected)\s+Output|(?:Visual|Diagram)\s+(?:Representation|Illustration|Example)).*$\n*/gim,
@@ -253,25 +309,65 @@ function stripLlmHtmlArtifacts(md: string): string {
 }
 
 /**
- * The front matter (cover + copyright) is raw HTML that gets injected directly
- * into the Markdown stream. Marked will pass it through as-is because it
- * recognises block-level HTML.
+ * Ensure fenced code blocks and GFM pipe tables have blank lines before/after them
+ * so `marked` recognises them as block-level elements instead of inline text.
  */
-function assembleParts(session: SessionState, getSubtopic: (u: number, s: number) => string | null): string {
+function ensureBlockBoundaries(md: string): string {
+  if (!md || typeof md !== 'string') return md;
+  let out = md;
+  // Blank line before ``` fences that aren't already preceded by one
+  out = out.replace(/([^\n])\n(```)/g, '$1\n\n$2');
+  // Blank line after closing ``` fences
+  out = out.replace(/(```)\n([^\n])/g, '$1\n\n$2');
+  // Blank line before GFM pipe-table rows (first row starting with |) when preceded by text
+  out = out.replace(/([^\n|])\n(\|[^\n]+\|)/g, '$1\n\n$2');
+  // Blank line after last pipe-table row before non-table text
+  out = out.replace(/(\|[^\n]+\|)\n([^\n|])/g, '$1\n\n$2');
+  // Blank line before headings (##, ###) when preceded by non-blank line
+  out = out.replace(/([^\n])\n(#{1,6}\s)/g, '$1\n\n$2');
+  // Blank line after closing </div> before markdown content
+  out = out.replace(/(<\/div>)\n(?!\n)/g, '$1\n\n');
+  // Blank line before bullet/numbered lists when preceded by text (not another list item)
+  out = out.replace(/([^\n-*\d])\n([-*]\s)/g, '$1\n\n$2');
+  out = out.replace(/([^\n\d])\n(\d+\.\s)/g, '$1\n\n$2');
+  return out;
+}
+
+// ── Segment types: raw HTML (pass-through) vs Markdown (needs parsing) ──
+
+export interface ContentSegment {
+  type: 'html' | 'md';
+  content: string;
+}
+
+function htmlSeg(content: string): ContentSegment { return { type: 'html', content }; }
+function mdSeg(content: string): ContentSegment { return { type: 'md', content }; }
+
+function cleanMd(raw: string): string {
+  return ensureBlockBoundaries(stripLlmHtmlArtifacts(raw));
+}
+
+/**
+ * Build the book as an ordered list of segments. Raw HTML (cover, copyright,
+ * page-break divs, TOC) is kept separate from Markdown content so the renderer
+ * can parse each markdown segment independently — preventing CommonMark HTML
+ * block rules from swallowing subsequent markdown.
+ */
+function assembleSegments(session: SessionState, getSubtopic: (u: number, s: number) => string | null): ContentSegment[] {
   const structure = session.structure;
-  if (!structure) return '';
-  const parts: string[] = [];
+  if (!structure) return [];
+  const segments: ContentSegment[] = [];
 
-  // 1. Cover + Copyright (raw HTML block)
-  parts.push(buildFrontMatterHtml(structure.title, session.author, session.isbn));
+  // 1. Cover + Copyright (raw HTML)
+  segments.push(htmlSeg(buildFrontMatterHtml(structure.title, session.author, session.isbn)));
 
-  // 2. Preface (LLM-generated Markdown — starts on a new page, before TOC)
+  // 2. Preface (Markdown, with page-break before)
   if (session.prefaceMarkdown) {
-    parts.push('\n\n<div style="page-break-before: always;"></div>\n\n');
-    parts.push(stripLlmHtmlArtifacts(session.prefaceMarkdown));
+    segments.push(htmlSeg('<div style="page-break-before: always;"></div>'));
+    segments.push(mdSeg(cleanMd(session.prefaceMarkdown)));
   }
 
-  // 3. Table of Contents (new page, clean numbered entries — raw HTML)
+  // 3. Table of Contents (raw HTML)
   const tocParts: string[] = [
     '<div style="page-break-before:always;"></div>',
     '<div class="toc">',
@@ -296,75 +392,67 @@ function assembleParts(session: SessionState, getSubtopic: (u: number, s: number
   tocParts.push(`<p style="margin:0.35em 0;font-weight:bold;"><a href="#glossary">${escapeTocText('Glossary')}</a></p>`);
   tocParts.push(`<p style="margin:0.35em 0;font-weight:bold;"><a href="#bibliography">${escapeTocText('Bibliography')}</a></p>`);
   tocParts.push('</div></div>');
-  parts.push(tocParts.join('\n') + '\n');
+  segments.push(htmlSeg(tocParts.join('\n')));
 
   // 4. Unit content
   for (let u = 0; u < structure.units.length; u++) {
     const unit = structure.units[u];
-    parts.push(`# Unit ${u + 1}: ${unit.unitTitle}\n`);
+    const unitParts: string[] = [`# Unit ${u + 1}: ${unit.unitTitle}\n`];
 
-    // 4a. Unit Introduction
     const intro = session.unitIntroductions[u];
-    if (intro) {
-      parts.push(stripLlmHtmlArtifacts(intro));
-    }
+    if (intro) unitParts.push(cleanMd(intro));
 
-    // 4b. Subtopics
     for (let s = 0; s < unit.subtopics.length; s++) {
       const md = getSubtopic(u, s);
-      if (md) parts.push(stripLlmHtmlArtifacts(md));
+      if (md) unitParts.push(cleanMd(md));
     }
 
-    // 4c. Unit End Summary
     const endSummary = session.unitEndSummaries[u];
-    if (endSummary) {
-      parts.push(stripLlmHtmlArtifacts(endSummary));
-    }
+    if (endSummary) unitParts.push(cleanMd(endSummary));
 
-    // 4d. Unit Exercises (ensure Option A is on its own line)
     const exercises = session.unitExercises[u];
-    if (exercises) {
-      parts.push(stripLlmHtmlArtifacts(ensureNewlineBeforeOptionA(exercises)));
-    }
+    if (exercises) unitParts.push(cleanMd(ensureNewlineBeforeOptionA(exercises)));
+
+    segments.push(mdSeg(unitParts.join('\n\n')));
   }
 
   // 5. Capstone Projects
-  if (session.capstonesMarkdown) {
-    parts.push(stripLlmHtmlArtifacts(session.capstonesMarkdown));
-  }
+  if (session.capstonesMarkdown) segments.push(mdSeg(cleanMd(session.capstonesMarkdown)));
 
   // 6. Case Studies
-  if (session.caseStudiesMarkdown) {
-    parts.push(stripLlmHtmlArtifacts(session.caseStudiesMarkdown));
-  }
+  if (session.caseStudiesMarkdown) segments.push(mdSeg(cleanMd(session.caseStudiesMarkdown)));
 
   // 7. Glossary
-  if (session.glossaryMarkdown) {
-    parts.push(stripLlmHtmlArtifacts(session.glossaryMarkdown));
-  }
+  if (session.glossaryMarkdown) segments.push(mdSeg(cleanMd(session.glossaryMarkdown)));
 
-  // 8. Bibliography (sanitize to remove junk/artifact characters common in LLM output)
+  // 8. Bibliography
   if (session.bibliographyMarkdown) {
-    parts.push(
-      sanitizeBibliographyGibberish(
-        sanitizeMarkdown(stripLlmHtmlArtifacts(session.bibliographyMarkdown)),
-      ),
-    );
+    segments.push(mdSeg(
+      sanitizeBibliographyGibberish(sanitizeMarkdown(stripLlmHtmlArtifacts(session.bibliographyMarkdown))),
+    ));
   }
 
-  return parts.join('\n\n');
+  return segments;
+}
+
+// ── Legacy: flat markdown string (for session.finalMarkdown) ──
+
+function segmentsToFlatMarkdown(segments: ContentSegment[]): string {
+  return ensureBlockBoundaries(
+    segments.map((s) => s.content).join('\n\n'),
+  );
+}
+
+export function buildSegments(session: SessionState): ContentSegment[] {
+  return assembleSegments(session, (u, s) => {
+    return session.subtopicMarkdowns.get(`u${u}-s${s}`) ?? null;
+  });
 }
 
 export function buildFinalMarkdown(session: SessionState): string {
-  const raw = assembleParts(session, (u, s) => {
-    return session.subtopicMarkdowns.get(`u${u}-s${s}`) ?? null;
-  });
-  return sanitizeMarkdown(raw);
+  return sanitizeMarkdown(segmentsToFlatMarkdown(buildSegments(session)));
 }
 
 export function rebuildFinalMarkdown(session: SessionState): string {
-  const raw = assembleParts(session, (u, s) => {
-    return session.subtopicMarkdowns.get(`u${u}-s${s}`) ?? null;
-  });
-  return sanitizeMarkdown(raw);
+  return sanitizeMarkdown(segmentsToFlatMarkdown(buildSegments(session)));
 }

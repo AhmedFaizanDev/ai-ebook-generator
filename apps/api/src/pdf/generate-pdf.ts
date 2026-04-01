@@ -1,6 +1,7 @@
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { SessionState } from '@/lib/types';
-import { markdownToHtml, getHighlightCss } from './markdown-to-html';
+import { segmentsToHtml, markdownToHtml, getHighlightCss } from './markdown-to-html';
+import { buildSegments } from '@/orchestrator/build-markdown';
 import { wrapInHtmlTemplate } from './html-template';
 import { getBrowser, closeBrowser } from './browser-pool';
 
@@ -60,7 +61,12 @@ export async function exportPDF(session: SessionState): Promise<void> {
     throw new Error('No finalMarkdown to render');
   }
 
-  const fullHtml = markdownToHtml(session.finalMarkdown);
+  // Prefer structured segments (each md segment parsed independently by marked)
+  // over flat finalMarkdown to prevent CommonMark HTML-block poisoning.
+  const segments = buildSegments(session);
+  const fullHtml = segments.length > 0
+    ? segmentsToHtml(segments)
+    : markdownToHtml(session.finalMarkdown);
   const highlightCss = getHighlightCss();
 
   if (!fullHtml || fullHtml.trim().length === 0) {

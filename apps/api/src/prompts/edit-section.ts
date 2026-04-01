@@ -27,5 +27,5 @@ ${selectedText}
 
 INSTRUCTION: ${ACTION_INSTRUCTIONS[action]}
 
-Output raw Markdown only. Match the existing formatting style. No preamble or explanation.`;
+Output raw Markdown only. Match the existing formatting style. No preamble or explanation. Do NOT include raw HTML, \`\`\`html blocks, SVG, or diagram markup — use GFM tables and prose only.`;
 }

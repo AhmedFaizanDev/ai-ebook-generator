@@ -1,5 +1,6 @@
 import { Marked, Tokens } from 'marked';
 import hljs from 'highlight.js';
+import type { ContentSegment } from '@/orchestrator/build-markdown';
 
 let highlightCssCache: string | null = null;
 
@@ -33,31 +34,97 @@ function escapeHtml(text: string): string {
     .replace(/'/g, '&#39;');
 }
 
-/**
- * When the LLM puts HTML in a code block and then repeats it in a ```output block,
- * we render the HTML block's content as actual HTML so the output shows the visual
- * result instead of raw code. Replaces ```output\n...\n``` (after ```html\n...\n```)
- * with a div that contains the preceding HTML for rendering.
- */
-function preprocessHtmlOutputBlocks(markdown: string): string {
-  if (!markdown || typeof markdown !== 'string') return markdown;
-  // Match: ```html (or htm) + newline + content + newline + ``` + optional whitespace + ```output + newline + any content + newline + ```
-  const re = /```html?\s*\n([\s\S]*?)\n```\s*\n```output\s*\n[\s\S]*?\n```/gi;
-  return markdown.replace(re, (_match, htmlContent: string) => {
-    const trimmed = htmlContent.trim();
-    return (
-      '```html\n' +
-      htmlContent +
-      '\n```\n\n' +
-      '<div class="rendered-html-output" style="border:1px solid #e0e0e0;padding:1em;margin:1em 0;background:#fafafa;">' +
-      trimmed +
-      '</div>\n'
-    );
-  });
+// ── Markdown pre-processing ──
+
+function normalizeMarkdownStructure(md: string): string {
+  if (!md || typeof md !== 'string') return md;
+  let out = md.replace(/\r\n/g, '\n');
+
+  out = out.replace(/([^\n])(```[^\n]*\n)/g, '$1\n$2');
+  out = out.replace(/([^\n])\n(```)/g, '$1\n\n$2');
+  out = out.replace(/(```)\n([^\n])/g, '$1\n\n$2');
+
+  const fenceCount = (out.match(/^\s*```/gm) ?? []).length;
+  if (fenceCount % 2 !== 0) {
+    out = `${out}\n\`\`\`\n`;
+  }
+
+  // Ensure headings always have blank line before them
+  out = out.replace(/([^\n])\n(#{1,6}\s)/g, '$1\n\n$2');
+
+  return out;
 }
 
-export function markdownToHtml(markdown: string): string {
-  const preprocessed = preprocessHtmlOutputBlocks(markdown);
+function stripHtmlOutputPairs(markdown: string): string {
+  if (!markdown || typeof markdown !== 'string') return markdown;
+  return markdown.replace(
+    /```html?\s*\n[\s\S]*?\n```\s*\n```output\s*\n[\s\S]*?\n```/gi,
+    '',
+  );
+}
+
+function stripSurvivingHtmlFences(markdown: string): string {
+  if (!markdown || typeof markdown !== 'string') return markdown;
+  return markdown.replace(/```\s*html?\s*\n[\s\S]*?\n```/gi, '');
+}
+
+/**
+ * Fix common GFM table issues that prevent marked from recognising them:
+ * 1. Missing separator row (|---|---|) after the header row
+ * 2. Missing blank line before the table
+ * 3. Tab-delimited tables (converted to pipe tables)
+ */
+function fixGfmTables(md: string): string {
+  if (!md || typeof md !== 'string') return md;
+  const lines = md.split('\n');
+  const out: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    if (!trimmed.startsWith('|') && (trimmed.match(/\t/g) || []).length >= 2) {
+      const cells = trimmed.split('\t').map((c) => c.trim());
+      const pipeLine = '| ' + cells.join(' | ') + ' |';
+      const nextLine = i + 1 < lines.length ? lines[i + 1].trim() : '';
+      const nextIsTabRow = !nextLine.startsWith('|') && (nextLine.match(/\t/g) || []).length >= 2;
+      const nextIsPipeRow = nextLine.startsWith('|');
+      if (nextIsTabRow || nextIsPipeRow) {
+        if (out.length > 0 && out[out.length - 1].trim() !== '') {
+          out.push('');
+        }
+        out.push(pipeLine);
+        out.push('| ' + cells.map(() => '---').join(' | ') + ' |');
+        continue;
+      }
+      out.push(pipeLine);
+      continue;
+    }
+
+    if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
+      const nextLine = i + 1 < lines.length ? lines[i + 1].trim() : '';
+      const nextIsSep = /^\|[\s:-]+(\|[\s:-]+)+\|?$/.test(nextLine);
+      const nextIsPipe = nextLine.startsWith('|') && nextLine.endsWith('|');
+      if (nextIsPipe && !nextIsSep) {
+        const cols = trimmed.split('|').filter((c) => c.trim()).length;
+        if (out.length > 0 && out[out.length - 1].trim() !== '' && !out[out.length - 1].trim().startsWith('|')) {
+          out.push('');
+        }
+        out.push(line);
+        out.push('| ' + Array(cols).fill('---').join(' | ') + ' |');
+        continue;
+      }
+    }
+
+    out.push(line);
+  }
+
+  return out.join('\n');
+}
+
+// ── Marked instance ──
+
+function createMarkedInstance(): Marked {
   const marked = new Marked({ gfm: true, breaks: false });
 
   marked.use({
@@ -66,10 +133,8 @@ export function markdownToHtml(markdown: string): string {
         const { text, lang } = token;
         if (lang) {
           const safeLang = lang.toLowerCase();
-          // Render ```html / ```htm as actual HTML (diagrams, layouts) instead of code
           if (safeLang === 'html' || safeLang === 'htm') {
-            const trimmed = text.trim();
-            return `<div class="rendered-html-output" style="border:1px solid #e0e0e0;padding:1em;margin:1em 0;background:#fafafa;">${trimmed}</div>\n`;
+            return `<pre><code class="language-html">${escapeHtml(text)}</code></pre>\n`;
           }
           if (hljs.getLanguage(safeLang)) {
             try {
@@ -81,7 +146,6 @@ export function markdownToHtml(markdown: string): string {
           }
           return `<pre><code class="language-${escapeHtml(safeLang)}">${escapeHtml(text)}</code></pre>\n`;
         }
-
         return `<pre><code class="hljs">${escapeHtml(text)}</code></pre>\n`;
       },
 
@@ -121,5 +185,177 @@ export function markdownToHtml(markdown: string): string {
     },
   });
 
-  return marked.parse(preprocessed) as string;
+  return marked;
+}
+
+// ── Pre-process a pure-markdown string before feeding to marked ──
+
+function preprocessMarkdown(md: string): string {
+  let out = normalizeMarkdownStructure(md);
+  out = stripHtmlOutputPairs(out);
+  out = stripSurvivingHtmlFences(out);
+  out = fixGfmTables(out);
+  return out;
+}
+
+// ── Post-render validation ──
+
+const RAW_MD_PATTERNS = [
+  /<p>\s*```/,                        // fenced code leaked
+  /<p>\s*#{1,6}\s/,                   // heading became paragraph
+  /<p>\s*\|[^|]+\|[^|]+\|/,          // pipe table became paragraph
+];
+
+function detectRawMarkdownInHtml(html: string): boolean {
+  return RAW_MD_PATTERNS.some((re) => re.test(html));
+}
+
+/**
+ * If raw markdown leaked through (headings, tables, bold), this re-parses
+ * individual <p> blocks that contain raw markdown syntax.
+ */
+function repairLeakedMarkdown(html: string, marked: Marked): string {
+  let repaired = html;
+
+  // Re-parse <p> blocks containing raw markdown headings
+  repaired = repaired.replace(
+    /<p>\s*(#{1,6})\s+(.*?)<\/p>/g,
+    (_m, hashes: string, text: string) => {
+      const level = hashes.length;
+      const id = text.toLowerCase().replace(/<[^>]*>/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || `heading-${level}`;
+      return `<h${level} id="${id}">${text}</h${level}>`;
+    },
+  );
+
+  // Re-parse <p> blocks that are raw pipe tables
+  repaired = repaired.replace(
+    /<p>(\|[^<]+(?:\n\|[^<]+)+)<\/p>/g,
+    (_m, tableBlock: string) => {
+      const parsed = marked.parse(tableBlock) as string;
+      return parsed.trim();
+    },
+  );
+
+  // Re-parse <p> blocks with raw **bold** markers
+  repaired = repaired.replace(
+    /<p>((?:[^<]|<(?!\/p>))*\*\*[^<]*)<\/p>/g,
+    (_m, inner: string) => {
+      const decoded = inner.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"');
+      const parsed = marked.parse(decoded) as string;
+      return parsed.trim();
+    },
+  );
+
+  return repaired;
+}
+
+// ── Public API ──
+
+/**
+ * Convert structured content segments to HTML. Raw HTML segments pass through
+ * untouched; markdown segments are parsed independently by marked. This
+ * guarantees that CommonMark HTML-block rules never swallow markdown content.
+ */
+export function segmentsToHtml(segments: ContentSegment[]): string {
+  const marked = createMarkedInstance();
+  const htmlParts: string[] = [];
+
+  for (const seg of segments) {
+    if (seg.type === 'html') {
+      htmlParts.push(seg.content);
+    } else {
+      const preprocessed = preprocessMarkdown(seg.content);
+      const rendered = marked.parse(preprocessed) as string;
+
+      if (detectRawMarkdownInHtml(rendered)) {
+        console.warn('[render] Raw markdown detected in segment — applying repair pass');
+        htmlParts.push(repairLeakedMarkdown(rendered, marked));
+      } else {
+        htmlParts.push(rendered);
+      }
+    }
+  }
+
+  return htmlParts.join('\n');
+}
+
+/**
+ * Legacy: convert a flat markdown string (with embedded raw HTML) to HTML.
+ * Used when only session.finalMarkdown is available (no segments).
+ *
+ * Splits the string into raw-HTML and markdown regions using a state machine,
+ * then parses each markdown region independently.
+ */
+export function markdownToHtml(markdown: string): string {
+  const segments = splitFlatMarkdownIntoSegments(markdown);
+  return segmentsToHtml(segments);
+}
+
+/**
+ * State-machine that splits a flat markdown string (with embedded raw HTML
+ * blocks) into typed segments. Tracks <div> nesting depth so nested divs
+ * (cover-page, copyright-page, toc) are treated as single HTML blocks.
+ */
+function splitFlatMarkdownIntoSegments(md: string): ContentSegment[] {
+  const segments: ContentSegment[] = [];
+  const lines = md.split('\n');
+  let inHtml = false;
+  let depth = 0;
+  let htmlBuf: string[] = [];
+  let mdBuf: string[] = [];
+
+  const flushMd = () => {
+    if (mdBuf.length > 0) {
+      const text = mdBuf.join('\n').trim();
+      if (text) segments.push({ type: 'md', content: text });
+      mdBuf = [];
+    }
+  };
+
+  const flushHtml = () => {
+    if (htmlBuf.length > 0) {
+      segments.push({ type: 'html', content: htmlBuf.join('\n') });
+      htmlBuf = [];
+    }
+  };
+
+  for (const line of lines) {
+    if (!inHtml) {
+      // Detect standalone self-closing HTML tags (page-break divs, <hr/>, etc.)
+      if (/^\s*<(?:div|hr)\b[^>]*\/>\s*$/i.test(line)) {
+        flushMd();
+        segments.push({ type: 'html', content: line });
+        continue;
+      }
+      // Detect start of a block-level <div> or <p> with style/class (structural HTML, not markdown)
+      if (/^\s*<div[\s>]/i.test(line)) {
+        flushMd();
+        inHtml = true;
+        depth = 0;
+        htmlBuf = [];
+      }
+    }
+
+    if (inHtml) {
+      htmlBuf.push(line);
+      const opens = (line.match(/<div[\s>]/gi) || []).length;
+      const closes = (line.match(/<\/div\s*>/gi) || []).length;
+      depth += opens - closes;
+      if (depth <= 0) {
+        flushHtml();
+        inHtml = false;
+        depth = 0;
+      }
+    } else {
+      mdBuf.push(line);
+    }
+  }
+
+  if (htmlBuf.length > 0) {
+    // Unclosed HTML block — flush as HTML anyway to avoid losing content
+    flushHtml();
+  }
+  flushMd();
+
+  return segments;
 }
