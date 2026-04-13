@@ -4,6 +4,7 @@ import { callLLM } from '@/lib/openai-client';
 import { incrementCounters } from '@/lib/counters';
 import { buildSystemPrompt } from '@/prompts/system';
 import { buildUnitEndSummaryPrompt } from '@/prompts/unit-summary-end';
+import { enforceContentAfterGeneration } from './section-enforce';
 
 export async function generateUnitEndSummary(
   session: SessionState,
@@ -34,5 +35,7 @@ export async function generateUnitEndSummary(
   });
 
   incrementCounters(session, result.totalTokens);
-  return result.content.trim();
+  const md = result.content.trim();
+  enforceContentAfterGeneration(session, md, `unit-end-summary-${unitIndex + 1}`);
+  return md;
 }

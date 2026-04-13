@@ -1,3 +1,19 @@
+export interface VisualConfig {
+  equations: { enabled: boolean };
+  mermaid: { enabled: boolean };
+  /** When true, export hard-fails on any unresolved math/diagram block. */
+  strictMode: boolean;
+  /** Number of auto-fix attempts before hard-fail (default 1). */
+  autoFixAttempts: number;
+}
+
+export const DEFAULT_VISUAL_CONFIG: VisualConfig = {
+  equations: { enabled: false },
+  mermaid: { enabled: false },
+  strictMode: true,
+  autoFixAttempts: 1,
+};
+
 export interface BookStructure {
   title: string;
   units: UnitStructure[];
@@ -27,6 +43,8 @@ export interface SessionState {
    *  false for non-technical topics (fiction, history, philosophy, arts, etc.).
    *  Controls whether code blocks are included in generated content. */
   isTechnical: boolean;
+  /** Per-book toggle for equation / Mermaid rendering in exports. */
+  visuals: VisualConfig;
   /** Optional author for cover; if not set, a random author is chosen from a fixed list. */
   author?: string;
   /** Optional ISBN from batch upload CSV (column C); shown on copyright page. */
@@ -75,6 +93,17 @@ export interface SubtopicContext {
   model: string;
   /** Mirrors session.isTechnical — controls whether code blocks are included in the subtopic prompt. */
   isTechnical: boolean;
+  /** Per-book visual rendering config for equations and diagrams. */
+  visuals: VisualConfig;
+}
+
+export interface ContentBlockError {
+  type: 'mermaid' | 'equation' | 'markdown-leak' | 'code-fence';
+  message: string;
+  /** Zero-based index of the block within the markdown (for targeted retry prompts). */
+  blockIndex: number;
+  /** Raw source of the failing block. */
+  source: string;
 }
 
 export interface VisualValidationResult {
@@ -82,6 +111,8 @@ export interface VisualValidationResult {
   hasAsciiDiagram: boolean;
   hasRequiredSubsection: boolean;
   pass: boolean;
+  /** Per-block errors found by content validator (empty when pass is true). */
+  errors: ContentBlockError[];
 }
 
 export interface ProgressEvent {

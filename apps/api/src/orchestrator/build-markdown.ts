@@ -112,10 +112,26 @@ function getCloud9LogoDataUrl(): string {
 }
 
 function toTitleCase(s: string): string {
-  return s
+  let t = s
     .trim()
     .toLowerCase()
     .replace(/\b\w/g, (c) => c.toUpperCase());
+  // Book-style title: lowercase conjunctions after commas / in compound subtitles (e.g. "Training, and Optimization")
+  t = t.replace(/([,:;])\s*(And|Or|Nor|But|Of|In|On|At|To|For|As|By)\b/g, (_, punct, w) => `${punct} ${w.toLowerCase()}`);
+  t = t.replace(/:\s*(And|Or|Nor|But)\b/g, (_, w) => `: ${w.toLowerCase()}`);
+  // Medial conjunctions: "Transformers And Attention" -> "Transformers and Attention"
+  t = t.replace(/\b(\w+)\s+(And|Or|Nor|But)\s+(\w+)\b/g, (_, a, w, b) => `${a} ${w.toLowerCase()} ${b}`);
+  if (t.length > 0) {
+    t = t.charAt(0).toUpperCase() + t.slice(1);
+    const colon = t.indexOf(':');
+    if (colon !== -1 && colon + 2 < t.length) {
+      const after = t.slice(colon + 1).trimStart();
+      if (after.length > 0) {
+        t = t.slice(0, colon + 1) + ' ' + after.charAt(0).toUpperCase() + after.slice(1);
+      }
+    }
+  }
+  return t;
 }
 
 /** Format ISBN-13 with hyphens per standard (3-1-3-5-1): prefix-group-registrant-publication-check. e.g. 9798893371000 → 979-8-893-37100-0 */
@@ -149,7 +165,7 @@ ${logoImg}
 </div>`;
 
   const rawIsbn = isbn?.trim() ?? '';
-  const isbnFormatted = rawIsbn ? formatIsbnWithHyphens(rawIsbn) : '';
+  const isbnFormatted = rawIsbn && /\d/.test(rawIsbn) ? formatIsbnWithHyphens(rawIsbn) : '';
   const isbnDisplay = isbnFormatted ? escapeHtml(isbnFormatted) : '&nbsp;';
 
   // Catalog block always shown; ISBN line shows number or blank space when missing

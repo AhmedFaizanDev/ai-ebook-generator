@@ -1,4 +1,4 @@
-import { SessionState } from '@/lib/types';
+import { SessionState, DEFAULT_VISUAL_CONFIG } from '@/lib/types';
 import { isTechnicalTopic } from '@/lib/topic-classifier';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -50,6 +50,7 @@ function deserialize(raw: string): SessionState {
     // session behaves consistently with what the classifier would have decided at creation time.
     // `topic` is always set on valid sessions; the `?? ''` guard is a safety-only fallback.
     isTechnical: typeof rest.isTechnical === 'boolean' ? rest.isTechnical : isTechnicalTopic(rest.topic ?? ''),
+    visuals: rest.visuals && typeof rest.visuals === 'object' ? { ...DEFAULT_VISUAL_CONFIG, ...rest.visuals } : { ...DEFAULT_VISUAL_CONFIG },
     unitIntroductions: Array.isArray(rest.unitIntroductions) ? rest.unitIntroductions : [],
     unitEndSummaries: Array.isArray(rest.unitEndSummaries) ? rest.unitEndSummaries : [],
     unitExercises: Array.isArray(rest.unitExercises) ? rest.unitExercises : [],
@@ -147,6 +148,7 @@ export function createSession(topic: string, model: string): SessionState | null
     status: 'queued',
     topic,
     isTechnical: isTechnicalTopic(topic),
+    visuals: { ...DEFAULT_VISUAL_CONFIG },
     model,
     phase: 'init',
     progress: 0,

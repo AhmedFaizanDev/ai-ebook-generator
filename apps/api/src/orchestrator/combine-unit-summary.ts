@@ -4,6 +4,7 @@ import { callLLM } from '@/lib/openai-client';
 import { incrementCounters } from '@/lib/counters';
 import { buildSystemPrompt } from '@/prompts/system';
 import { buildUnitSummaryCombinePrompt } from '@/prompts/unit-summary-combine';
+import { enforceContentAfterGeneration } from './section-enforce';
 
 export async function combineUnitSummary(
   unitTitle: string,
@@ -25,5 +26,7 @@ export async function combineUnitSummary(
   });
 
   incrementCounters(session, result.totalTokens);
-  return result.content.trim();
+  const md = result.content.trim();
+  enforceContentAfterGeneration(session, md, `unit-summary-combine: ${unitTitle}`);
+  return md;
 }

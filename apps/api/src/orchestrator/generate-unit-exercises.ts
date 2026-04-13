@@ -1,4 +1,4 @@
-import { SessionState } from '@/lib/types';
+import { SessionState, type VisualConfig } from '@/lib/types';
 import { LIGHT_MODEL } from '@/lib/config';
 import { callLLM } from '@/lib/openai-client';
 import { incrementCounters } from '@/lib/counters';
@@ -7,6 +7,7 @@ import {
   buildUnitExercisesPrompt,
   buildUnitExercisesRepairPrompt,
 } from '@/prompts/unit-exercises';
+import { validateContentBlocks } from './content-validator';
 
 const QUESTION_HEAD_RE = /\*\*\s*(\d{1,2})\./g;
 
@@ -69,6 +70,20 @@ export function validateUnitExercisesMarkdown(md: string): UnitExercisesValidati
   return { pass: reasons.length === 0, reasons };
 }
 
+function mergeExerciseContentValidation(
+  md: string,
+  visuals: VisualConfig,
+  structural: UnitExercisesValidation,
+): UnitExercisesValidation {
+  const cr = validateContentBlocks(md, visuals);
+  if (cr.pass) return structural;
+  const reasons = [
+    ...structural.reasons,
+    ...cr.errors.map((e) => `[${e.type}] ${e.message}`),
+  ];
+  return { pass: false, reasons };
+}
+
 function normalizeExercisesMarkdown(md: string): string {
   let s = md.trim();
   s = s.replace(/([.?])\s*A\)/g, '$1\n\nA)');
@@ -127,7 +142,11 @@ export async function generateUnitExercises(
 
   let combined = normalizeExercisesMarkdown(block1 + '\n\n' + block2);
 
-  let check = validateUnitExercisesMarkdown(combined);
+  let check = mergeExerciseContentValidation(
+    combined,
+    session.visuals,
+    validateUnitExercisesMarkdown(combined),
+  );
   if (check.pass) return combined;
 
   const repairPrompt = buildUnitExercisesRepairPrompt(
@@ -154,7 +173,11 @@ export async function generateUnitExercises(
   incrementCounters(session, repairResult.totalTokens);
 
   const repaired = normalizeExercisesMarkdown(repairResult.content);
-  const repairCheck = validateUnitExercisesMarkdown(repaired);
+  const repairCheck = mergeExerciseContentValidation(
+    repaired,
+    session.visuals,
+    validateUnitExercisesMarkdown(repaired),
+  );
   if (repairCheck.pass) return repaired;
 
   console.warn(

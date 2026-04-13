@@ -1,4 +1,5 @@
-import { SessionState } from '@/lib/types';
+import { SessionState, type VisualConfig } from '@/lib/types';
+import { validateContentBlocks } from './content-validator';
 import { LIGHT_MODEL } from '@/lib/config';
 import { callLLM } from '@/lib/openai-client';
 import { incrementCounters } from '@/lib/counters';
@@ -16,6 +17,7 @@ function sanitizeBibliographyText(md: string): string {
     .replace(/\uFFFD/g, '')
     .replace(/[\u200B-\u200D\uFEFF\u2060]/g, '')
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+    .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
     .replace(/\r\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -26,11 +28,56 @@ function normalizeEntryLine(line: string): string {
   return line;
 }
 
+/** Text before the title’s opening `, "` (citation format: Author, "Title," …). */
+function extractAuthorSegment(entryLine: string): string {
+  const s = entryLine.replace(/^[-*]\s+/, '').trim();
+  const m = s.match(/^(.+?),\s*"/);
+  return m ? m[1].trim() : s;
+}
+
+/**
+ * Detect corrupted citations: run-on initials, truncated authors, or broken title quotes.
+ */
+function getBibliographyEntryFormatError(line: string): string | null {
+  const s = line.replace(/^[-*]\s+/, '').trim();
+  if (s.length < 12) return 'entry too short';
+
+  const quoteCount = (s.match(/"/g) ?? []).length;
+  if (quoteCount < 2) return 'title needs paired double quotes (opening before title, closing after)';
+
+  if (!/,\s*"/.test(s)) {
+    return 'missing comma and opening " before title (use: Lastname, "Title," Publisher, Year)';
+  }
+
+  const authorPart = extractAuthorSegment(s);
+  if (/\.\.\.|…/.test(authorPart)) {
+    return 'ellipsis or truncation in author — use full surname, no "..."';
+  }
+
+  const initialRuns = authorPart.match(/[A-Z]\.\s*/g) ?? [];
+  if (initialRuns.length >= 6) {
+    return 'author has too many single-letter initials in a row (use real names, e.g. H. K. Khalil)';
+  }
+
+  const authorWords = authorPart.split(/\s+/).filter(Boolean);
+  const hasSurnameLike = authorWords.some((w) => {
+    const t = w.replace(/,$/, '');
+    return /^[A-Za-z]{2,3}\.$/.test(t)
+      ? false
+      : /^[A-Za-z]{4,}\.?$/i.test(t);
+  });
+  if (initialRuns.length >= 4 && !hasSurnameLike) {
+    return 'author line looks like initials only — include at least one full surname';
+  }
+
+  return null;
+}
+
 function isGibberishEntry(line: string): boolean {
   const s = line.replace(/^[-*]\s+/, '').trim();
   if (s.length > 320) return true;
-  if (/(?:\b[A-Z]\.\s*){12,}/.test(s)) return true;
-  if (/(?:\b[A-Z]\.\s*,?\s*){10,}/.test(s)) return true;
+  if (/(?:\b[A-Z]\.\s*){8,}/.test(s)) return true;
+  if (/(?:\b[A-Z]\.\s*,?\s*){7,}/.test(s)) return true;
 
   const words = s.toLowerCase().match(/[a-z0-9]+/g) ?? [];
   if (words.length >= 20) {
@@ -40,11 +87,19 @@ function isGibberishEntry(line: string): boolean {
   return false;
 }
 
-function validateBibliographyMarkdown(md: string): BibliographyCheck {
+/** Exported for tests — same checks used before accept/repair/fallback. */
+export function validateBibliographyMarkdown(md: string, visuals: VisualConfig): BibliographyCheck {
   const reasons: string[] = [];
   const normalized = sanitizeBibliographyText(md);
   const lines = normalized.split('\n').map((line) => normalizeEntryLine(line.trimEnd()));
   const cleaned = lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+
+  const contentResult = validateContentBlocks(cleaned, visuals);
+  if (!contentResult.pass) {
+    for (const e of contentResult.errors) {
+      reasons.push(`[${e.type}] ${e.message}`);
+    }
+  }
 
   if (!/^#\s+Bibliography\b/im.test(cleaned)) {
     reasons.push('missing "# Bibliography" heading');
@@ -68,11 +123,32 @@ function validateBibliographyMarkdown(md: string): BibliographyCheck {
 
   let gibberishCount = 0;
   let badYearCount = 0;
-  for (const line of entryLines) {
+  const formatProblems: string[] = [];
+  let formatErrorCount = 0;
+
+  for (let i = 0; i < entryLines.length; i++) {
+    const line = entryLines[i];
     if (isGibberishEntry(line)) gibberishCount++;
     if (!/(?:19|20)\d{2}\b/.test(line)) badYearCount++;
+
+    const fmtErr = getBibliographyEntryFormatError(line);
+    if (fmtErr) {
+      formatErrorCount++;
+      if (formatProblems.length < 6) {
+        formatProblems.push(`bullet ${i + 1}: ${fmtErr}`);
+      }
+    }
   }
+
   if (gibberishCount > 0) reasons.push(`detected ${gibberishCount} gibberish/repetitive entries`);
+  if (formatProblems.length > 0) {
+    reasons.push(...formatProblems);
+    if (formatErrorCount > formatProblems.length) {
+      reasons.push(
+        `(+${formatErrorCount - formatProblems.length} more bullets with citation format issues)`,
+      );
+    }
+  }
   if (badYearCount > Math.ceil(entryLines.length * 0.4)) {
     reasons.push('too many entries missing publication year');
   }
@@ -133,7 +209,7 @@ export async function generateBibliography(session: SessionState): Promise<strin
 
   const basePrompt = buildBibliographyPrompt(session.topic, unitTitles);
   const first = await callBibliographyLLM(session, basePrompt, 'bibliography');
-  const firstCheck = validateBibliographyMarkdown(first);
+  const firstCheck = validateBibliographyMarkdown(first, session.visuals);
   if (firstCheck.pass) return firstCheck.cleaned;
 
   const repairPrompt = `${basePrompt}
@@ -153,10 +229,12 @@ Hard constraints:
 - Use bullet list entries only (each entry starts with "- ").
 - 5 to 12 total entries.
 - Each entry must include a year (YYYY).
-- No repeated initials chains, no gibberish, no placeholder spam, no HTML, no code blocks.`;
+- No repeated initials chains, no gibberish, no placeholder spam, no HTML, no code blocks.
+- Every book/paper title must appear inside ASCII double quotes: Author, "Full Title," Publisher, Year.
+- No "..." in author names; use complete real surnames (verify names you cite).`;
 
   const repaired = await callBibliographyLLM(session, repairPrompt, 'bibliography-repair');
-  const repairCheck = validateBibliographyMarkdown(repaired);
+  const repairCheck = validateBibliographyMarkdown(repaired, session.visuals);
   if (repairCheck.pass) return repairCheck.cleaned;
 
   console.warn(

@@ -1,7 +1,9 @@
 import { SessionState } from '@/lib/types';
 import { segmentsToHtml, markdownToHtml, getHighlightCss } from '@/pdf/markdown-to-html';
 import { buildSegments } from '@/orchestrator/build-markdown';
-import { PRINT_CSS } from '@/pdf/html-template';
+import { PRINT_CSS, getMathCss, PRINT_MATH_OVERRIDES } from '@/pdf/html-template';
+import { auditExportHtml } from '@/pdf/export-preflight';
+import { getBrowser } from '@/pdf/browser-pool';
 
 // html-to-docx ships a default export (CJS)
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -66,14 +68,27 @@ export async function exportDOCX(session: SessionState): Promise<Buffer> {
     throw new Error('No finalMarkdown to render for DOCX');
   }
 
+  const visuals = session.visuals;
   const segments = buildSegments(session);
   const rawHtml = segments.length > 0
-    ? segmentsToHtml(segments)
-    : markdownToHtml(session.finalMarkdown);
+    ? segmentsToHtml(segments, visuals)
+    : markdownToHtml(session.finalMarkdown, visuals);
+  // Preflight audit before DOCX conversion
+  if (session.visuals?.strictMode) {
+    const preflightErrors = auditExportHtml(rawHtml);
+    if (preflightErrors.length > 0) {
+      const summary = preflightErrors.map((e) => `[${e.type}] ${e.message}`).join('; ');
+      console.error(`[DOCX] Export preflight failed (${preflightErrors.length} errors): ${summary}`);
+      throw new Error(`DOCX export preflight failed: ${summary}`);
+    }
+  }
+
   let bodyHtml = enhanceHtmlForDocx(rawHtml);
   bodyHtml = injectDocxPageBreaks(bodyHtml);
   const highlightCss = getHighlightCss();
 
+  const mathCss = visuals?.equations?.enabled ? getMathCss() : '';
+  const mathOverrides = visuals?.equations?.enabled ? PRINT_MATH_OVERRIDES : '';
   const fullHtml = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -82,6 +97,8 @@ export async function exportDOCX(session: SessionState): Promise<Buffer> {
 ${PRINT_CSS}
 ${highlightCss}
 ${DOCX_COMPAT_CSS}
+${mathCss}
+${mathOverrides}
 </style>
 </head>
 <body>
@@ -89,12 +106,18 @@ ${bodyHtml}
 </body>
 </html>`;
 
-  const docxBuffer: Buffer = await HTMLtoDOCX(fullHtml, null, {
+  // Rasterize math and mermaid blocks to images for Word compatibility
+  const needsRasterize = (visuals?.equations?.enabled || visuals?.mermaid?.enabled);
+  const docxHtml = needsRasterize
+    ? await rasterizeVisualsForDocx(fullHtml, visuals?.mermaid?.enabled ?? false)
+    : fullHtml;
+
+  const docxBuffer: Buffer = await HTMLtoDOCX(docxHtml, null, {
     table: { row: { cantSplit: true } },
     footer: true,
     pageNumber: true,
     font: 'Georgia',
-    fontSize: 22,      // half-points: 22 = 11pt
+    fontSize: 22,
     title: session.structure?.title ?? session.topic,
   });
 
@@ -103,4 +126,88 @@ ${bodyHtml}
   );
 
   return docxBuffer;
+}
+
+/**
+ * Use Puppeteer to render the full HTML, then screenshot math and mermaid
+ * elements and replace them with inline <img> tags (base64 PNGs).
+ * This ensures Word displays rendered visuals instead of raw TeX or SVG.
+ */
+async function rasterizeVisualsForDocx(html: string, mermaidEnabled: boolean): Promise<string> {
+  const browser = await getBrowser();
+  const page = await browser.newPage();
+  try {
+    await page.setViewport({ width: 794, height: 1123 });
+    await page.setContent(html, { waitUntil: 'load', timeout: 120_000 });
+
+    if (mermaidEnabled) {
+      const hasMermaid = await page.evaluate(() => document.querySelectorAll('pre.mermaid').length > 0);
+      if (hasMermaid) {
+        await page.addScriptTag({ url: 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js' });
+        await page.evaluate(() => {
+          (window as any).mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose' });
+          return (window as any).mermaid.run({ querySelector: 'pre.mermaid' });
+        });
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    }
+
+    const selectors = [
+      '.math-inline', '.math-display', '.katex', '.katex-display',
+      '.mermaid-container',
+    ];
+
+    const rasterized = await page.evaluate(async (sels: string[]) => {
+      const results: { selector: string; index: number; dataUrl: string; width: number; height: number }[] = [];
+      for (const sel of sels) {
+        const elements = document.querySelectorAll(sel);
+        for (let i = 0; i < elements.length; i++) {
+          const el = elements[i] as HTMLElement;
+          if (el.offsetWidth === 0 || el.offsetHeight === 0) continue;
+          // Mark for replacement
+          el.setAttribute('data-raster-id', `${sel}-${i}`);
+          results.push({
+            selector: sel,
+            index: i,
+            dataUrl: '',
+            width: el.offsetWidth,
+            height: el.offsetHeight,
+          });
+        }
+      }
+      return results;
+    }, selectors);
+
+    for (const item of rasterized) {
+      const el = await page.$(`[data-raster-id="${item.selector}-${item.index}"]`);
+      if (!el) continue;
+      try {
+        const screenshot = await el.screenshot({ type: 'png', encoding: 'base64' }) as string;
+        item.dataUrl = `data:image/png;base64,${screenshot}`;
+      } catch {
+        console.warn(`[DOCX] Failed to screenshot ${item.selector}[${item.index}]`);
+      }
+    }
+
+    // Replace elements in the HTML with <img> tags
+    let resultHtml = await page.evaluate((items: typeof rasterized) => {
+      for (const item of items) {
+        if (!item.dataUrl) continue;
+        const el = document.querySelector(`[data-raster-id="${item.selector}-${item.index}"]`);
+        if (!el) continue;
+        const img = document.createElement('img');
+        img.src = item.dataUrl;
+        img.style.width = `${item.width}px`;
+        img.style.maxWidth = '100%';
+        img.style.height = 'auto';
+        img.alt = item.selector.includes('math') ? 'equation' : 'diagram';
+        el.replaceWith(img);
+      }
+      return document.documentElement.outerHTML;
+    }, rasterized);
+
+    return `<!DOCTYPE html>\n${resultHtml}`;
+  } finally {
+    await page.close().catch(() => {});
+  }
 }

@@ -5,6 +5,7 @@ import { callLLM } from '@/lib/openai-client';
 import { incrementCounters } from '@/lib/counters';
 import { buildSystemPrompt } from '@/prompts/system';
 import { buildEditSectionPrompt, EditAction } from '@/prompts/edit-section';
+import { visualValidator } from '@/orchestrator/visual-validator';
 
 const VALID_ACTIONS: EditAction[] = ['expand', 'rewrite', 'add_example', 'add_table', 'shorten'];
 const MAX_VERSIONS = 5;
@@ -232,6 +233,38 @@ export default function registerEditSection(router: Router): void {
 
       const replacement = result.content.trim();
       const updatedMd = currentMd.slice(0, startIdx) + replacement + currentMd.slice(endIdx);
+
+      const visualCheck = visualValidator(updatedMd, session.visuals);
+      if (!visualCheck.pass) {
+        const details =
+          visualCheck.errors.length > 0
+            ? visualCheck.errors
+            : [
+                {
+                  type: 'structure',
+                  message:
+                    'Subtopic structure check failed after edit (required table / subsection placement).',
+                },
+              ];
+        if (session.visuals.strictMode) {
+          const restored = versions.pop();
+          if (restored != null) {
+            session.subtopicMarkdowns.set(key, restored);
+            session.subtopicVersions.set(key, versions);
+            saveSession(session);
+          }
+          res.status(422).json({
+            error: 'Edited content failed validation',
+            details,
+          });
+          return;
+        }
+        console.warn(
+          `[edit-section] Validation issues for ${key} (strictMode off; keeping edit): ${details
+            .map((d) => `[${d.type}] ${d.message}`)
+            .join('; ')}`,
+        );
+      }
 
       session.subtopicMarkdowns.set(key, updatedMd);
       session.finalMarkdown = null;

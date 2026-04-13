@@ -4,6 +4,7 @@ import { callLLM } from '@/lib/openai-client';
 import { incrementCounters } from '@/lib/counters';
 import { buildSystemPrompt } from '@/prompts/system';
 import { buildGlossaryPrompt } from '@/prompts/glossary';
+import { enforceContentAfterGeneration } from './section-enforce';
 
 export async function generateGlossary(session: SessionState): Promise<string> {
   const structure = session.structure!;
@@ -24,5 +25,7 @@ export async function generateGlossary(session: SessionState): Promise<string> {
   });
 
   incrementCounters(session, result.totalTokens);
-  return result.content.trim();
+  const md = result.content.trim();
+  enforceContentAfterGeneration(session, md, 'glossary');
+  return md;
 }

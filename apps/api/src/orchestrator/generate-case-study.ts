@@ -4,6 +4,7 @@ import { callLLM } from '@/lib/openai-client';
 import { incrementCounters } from '@/lib/counters';
 import { buildSystemPrompt } from '@/prompts/system';
 import { buildBatchedCaseStudyPrompt, buildCaseStudyPrompt } from '@/prompts/case-study';
+import { enforceContentAggregateAndH2Sections } from './section-enforce';
 
 function splitBatchedOutput(raw: string, expectedCount: number): string[] | null {
   const parts = raw.split(/\n---\n/).map((p) => p.trim()).filter((p) => p.length > 0);
@@ -48,7 +49,9 @@ export async function generateCaseStudies(session: SessionState): Promise<string
         }
         return md;
       });
-      return '# Case Studies\n\n' + fixed.join('\n\n---\n\n');
+      const out = '# Case Studies\n\n' + fixed.join('\n\n---\n\n');
+      enforceContentAggregateAndH2Sections(session, out, 'case-studies');
+      return out;
     }
 
     console.warn('[case-studies] Batched output could not be split; falling back to per-item calls');
@@ -85,5 +88,7 @@ export async function generateCaseStudies(session: SessionState): Promise<string
     parts.push(md);
   }
 
-  return '# Case Studies\n\n' + parts.join('\n\n---\n\n');
+  const out = '# Case Studies\n\n' + parts.join('\n\n---\n\n');
+  enforceContentAggregateAndH2Sections(session, out, 'case-studies');
+  return out;
 }

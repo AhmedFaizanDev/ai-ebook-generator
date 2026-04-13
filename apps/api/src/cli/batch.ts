@@ -39,7 +39,8 @@ import {
 import { getDriveClient } from '@/drive/auth';
 import { loadSessionById, deletePersistedSession } from '@/lib/session-store';
 import { isTechnicalTopic } from '@/lib/topic-classifier';
-import type { SessionState } from '@/lib/types';
+import type { SessionState, VisualConfig } from '@/lib/types';
+import { DEFAULT_VISUAL_CONFIG } from '@/lib/types';
 
 const SESSIONS_DIR = path.resolve(process.cwd(), '.sessions');
 const PROGRESS_FILE = process.env.BATCH_PROGRESS_FILE
@@ -109,16 +110,25 @@ interface BatchRow {
   domain?: string;
   /** When set, overrides keyword-based technical classification from title. */
   isTechnical?: boolean;
+  /** Per-book visual config overrides (equations / mermaid). */
+  visuals?: Partial<VisualConfig>;
 }
 
-function createBatchSession(topic: string, author?: string, isbn?: string, stableId?: string, isTechnicalOverride?: boolean): SessionState {
+function createBatchSession(topic: string, author?: string, isbn?: string, stableId?: string, isTechnicalOverride?: boolean, visualsOverride?: Partial<VisualConfig>): SessionState {
   const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
   const isTechnical = typeof isTechnicalOverride === 'boolean' ? isTechnicalOverride : isTechnicalTopic(topic);
+  const visuals: VisualConfig = {
+    ...DEFAULT_VISUAL_CONFIG,
+    ...visualsOverride,
+    equations: { ...DEFAULT_VISUAL_CONFIG.equations, ...visualsOverride?.equations },
+    mermaid: { ...DEFAULT_VISUAL_CONFIG.mermaid, ...visualsOverride?.mermaid },
+  };
   return {
     id: stableId ?? crypto.randomUUID(),
     status: 'queued',
     topic,
     isTechnical,
+    visuals,
     author: author?.trim() || undefined,
     isbn: isbn?.trim() || undefined,
     model,
@@ -157,14 +167,16 @@ function getOrCreateSessionForBook(
   author?: string,
   isbn?: string,
   isTechnicalOverride?: boolean,
+  visualsOverride?: Partial<VisualConfig>,
 ): { session: SessionState; resumed: boolean } {
   const sid = stableSessionId(title);
   const existing = loadSessionById(sid);
   if (existing) {
     existing.lastActivityAt = Date.now();
+    if (!existing.visuals) existing.visuals = { ...DEFAULT_VISUAL_CONFIG };
     return { session: existing, resumed: true };
   }
-  const session = createBatchSession(title, author, isbn, sid, isTechnicalOverride);
+  const session = createBatchSession(title, author, isbn, sid, isTechnicalOverride, visualsOverride);
   return { session, resumed: false };
 }
 
@@ -209,6 +221,45 @@ function parseTechnicalValue(raw: string): boolean | undefined {
   return undefined;
 }
 
+function parseBoolCol(raw: string): boolean | undefined {
+  const v = raw.trim().toLowerCase();
+  if (['true', 'yes', 'y', '1'].includes(v)) return true;
+  if (['false', 'no', 'n', '0'].includes(v)) return false;
+  return undefined;
+}
+
+function parseVisualsColumns(equationsRaw: string, mermaidRaw: string): Partial<VisualConfig> | undefined {
+  const eq = parseBoolCol(equationsRaw);
+  const mm = parseBoolCol(mermaidRaw);
+  if (eq === undefined && mm === undefined) return undefined;
+  const partial: Partial<VisualConfig> = {};
+  if (eq !== undefined) partial.equations = { enabled: eq };
+  if (mm !== undefined) partial.mermaid = { enabled: mm };
+  return partial;
+}
+
+/**
+ * ISBN must contain digits. Rejects common CSV mistakes (e.g. "technical" or "true"
+ * placed in the isbn column when a comma is missing).
+ */
+function normalizeBatchIsbn(raw: string): string | undefined {
+  const s = raw.trim();
+  if (!s) return undefined;
+  if (parseTechnicalValue(s) !== undefined) {
+    console.warn(`[BATCH] Ignoring invalid ISBN (looks like technical flag): "${s.slice(0, 40)}"`);
+    return undefined;
+  }
+  if (parseBoolCol(s) !== undefined) {
+    console.warn(`[BATCH] Ignoring invalid ISBN (looks like boolean): "${s.slice(0, 40)}"`);
+    return undefined;
+  }
+  if (!/\d/.test(s)) {
+    console.warn(`[BATCH] Ignoring ISBN with no digits: "${s.slice(0, 40)}"`);
+    return undefined;
+  }
+  return s;
+}
+
 async function readRowsFromExcel(filePath: string): Promise<BatchRow[]> {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.readFile(filePath);
@@ -240,12 +291,16 @@ async function readRowsFromExcel(filePath: string): Promise<BatchRow[]> {
     const domainRaw = getCell(row, 'domain') || getCell(row, 'Domain') || getCell(row, 'folder');
     const technicalRaw = getCell(row, 'technical') || getCell(row, 'isTechnical') || getCell(row, 'type');
     const isTechnical = parseTechnicalValue(technicalRaw);
+    const equationsRaw = getCell(row, 'equations') || getCell(row, 'math');
+    const mermaidRaw = getCell(row, 'mermaid') || getCell(row, 'diagrams');
+    const visuals = parseVisualsColumns(equationsRaw, mermaidRaw);
     rows.push({
       title,
       author: authorRaw.length > 0 ? authorRaw : undefined,
-      isbn: isbnRaw.length > 0 ? isbnRaw : undefined,
+      isbn: normalizeBatchIsbn(isbnRaw),
       domain: domainRaw.length > 0 ? domainRaw : undefined,
       isTechnical: isTechnical,
+      visuals,
     });
   });
   return rows;
@@ -282,12 +337,16 @@ function readRowsFromCsv(filePath: string): BatchRow[] {
     const domainRaw = getCol(record, 'domain', 'folder');
     const technicalRaw = getCol(record, 'technical', 'isTechnical', 'type');
     const isTechnical = parseTechnicalValue(technicalRaw);
+    const equationsRaw = getCol(record, 'equations', 'math');
+    const mermaidRaw = getCol(record, 'mermaid', 'diagrams');
+    const visuals = parseVisualsColumns(equationsRaw, mermaidRaw);
     rows.push({
       title,
       author: authorRaw.length > 0 ? authorRaw : undefined,
-      isbn: isbnRaw.length > 0 ? isbnRaw : undefined,
+      isbn: normalizeBatchIsbn(isbnRaw),
       domain: domainRaw.length > 0 ? domainRaw : undefined,
       isTechnical,
+      visuals,
     });
   }
   return rows;
@@ -311,12 +370,13 @@ async function processBook(
   isbn?: string,
   folders?: UploadFolders,
   isTechnicalOverride?: boolean,
+  visualsOverride?: Partial<VisualConfig>,
 ): Promise<void> {
   const bookStartMs = Date.now();
   const mem = process.memoryUsage();
   console.log(`[BATCH] (${index + 1}/${total}) Generating: "${title}" | heap=${Math.round(mem.heapUsed / 1024 / 1024)}MB`);
 
-  const { session, resumed } = getOrCreateSessionForBook(title, author, isbn, isTechnicalOverride);
+  const { session, resumed } = getOrCreateSessionForBook(title, author, isbn, isTechnicalOverride, visualsOverride);
   session.batchIndex = index + 1;
   session.batchTotal = total;
   if (resumed) {
@@ -571,7 +631,7 @@ async function main(): Promise<void> {
       }
 
       try {
-        await processBook(row.title, globalIdx, titles.length, row.author, row.isbn, folders, row.isTechnical);
+        await processBook(row.title, globalIdx, titles.length, row.author, row.isbn, folders, row.isTechnical, row.visuals);
         progress.completed.push(row.title);
         const failedIdx = progress.failed.indexOf(row.title);
         if (failedIdx !== -1) progress.failed.splice(failedIdx, 1);

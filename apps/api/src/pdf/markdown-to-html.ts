@@ -1,6 +1,9 @@
 import { Marked, Tokens } from 'marked';
 import hljs from 'highlight.js';
+import katex from 'katex';
 import type { ContentSegment } from '@/orchestrator/build-markdown';
+import type { VisualConfig } from '@/lib/types';
+import { DEFAULT_VISUAL_CONFIG } from '@/lib/types';
 
 let highlightCssCache: string | null = null;
 
@@ -34,6 +37,97 @@ function escapeHtml(text: string): string {
     .replace(/'/g, '&#39;');
 }
 
+// ── KaTeX math rendering ──
+
+function renderMath(latex: string, displayMode: boolean): string {
+  const source = latex.trim();
+  if (!source) return '';
+  try {
+    return katex.renderToString(source, {
+      displayMode,
+      throwOnError: false,
+      output: 'htmlAndMathml',
+      strict: 'ignore',
+    });
+  } catch {
+    return displayMode ? `\\[${source}\\]` : `\\(${source}\\)`;
+  }
+}
+
+/**
+ * Apply a transform function to text segments that are outside fenced code
+ * blocks. This prevents math/mermaid processing from corrupting code samples.
+ */
+function transformOutsideCodeFences(md: string, fn: (segment: string) => string): string {
+  const lines = md.split('\n');
+  const segments: { text: string; isFence: boolean }[] = [];
+  let buf: string[] = [];
+  let inFence = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!inFence) {
+      if (trimmed.startsWith('```')) {
+        if (buf.length > 0) {
+          segments.push({ text: buf.join('\n'), isFence: false });
+          buf = [];
+        }
+        inFence = true;
+        buf.push(line);
+      } else {
+        buf.push(line);
+      }
+    } else {
+      buf.push(line);
+      if (trimmed === '```') {
+        segments.push({ text: buf.join('\n'), isFence: true });
+        buf = [];
+        inFence = false;
+      }
+    }
+  }
+  if (buf.length > 0) {
+    segments.push({ text: buf.join('\n'), isFence: inFence });
+  }
+
+  return segments.map((s) => s.isFence ? s.text : fn(s.text)).join('\n');
+}
+
+function preprocessMath(markdown: string): string {
+  if (!markdown || typeof markdown !== 'string') return markdown;
+
+  return transformOutsideCodeFences(markdown, (segment) => {
+    const withDisplay = segment
+      .replace(/\\\[([\s\S]*?)\\\]/g, (_m, expr: string) => {
+        const rendered = renderMath(expr, true);
+        return rendered ? `\n<div class="math-display">${rendered}</div>\n` : '';
+      })
+      .replace(/\$\$([\s\S]*?)\$\$/g, (_m, expr: string) => {
+        const rendered = renderMath(expr, true);
+        return rendered ? `\n<div class="math-display">${rendered}</div>\n` : '';
+      });
+
+    return withDisplay.replace(/\\\((.+?)\\\)/g, (_m, expr: string) => {
+      const rendered = renderMath(expr, false);
+      return rendered ? `<span class="math-inline">${rendered}</span>` : '';
+    });
+  });
+}
+
+// ── Mermaid sanitizer + placeholder ──
+
+function sanitizeMermaidSyntax(raw: string): string {
+  return raw
+    .replace(/\u201C|\u201D/g, '"')
+    .replace(/\u2018|\u2019/g, "'")
+    .replace(/\u2014/g, '--')
+    .replace(/\u2013/g, '-')
+    .replace(/\u00A0/g, ' ')
+    .replace(/[\u200B-\u200D\uFEFF\u2060]/g, '')
+    .replace(/\t/g, '    ')
+    .trim();
+}
+
 // ── Markdown pre-processing ──
 
 /**
@@ -65,7 +159,6 @@ function normalizeMarkdownStructure(md: string): string {
       }
     }
   }
-  // If we're still inside a fence at end-of-input, close it
   if (inFence) {
     out += '\n```\n';
   }
@@ -157,7 +250,6 @@ function fixGfmTables(md: string): string {
       const prevOut = out.length > 0 ? out[out.length - 1].trim() : '';
       const prevIsPipe = prevOut.startsWith('|') && prevOut.endsWith('|');
       const prevIsSep = /^\|[\s:-]+(\|[\s:-]+)+\|?$/.test(prevOut);
-      // Only inject a separator at the START of a table block, never between data rows.
       if (nextIsPipe && !nextIsSep && !prevIsPipe && !prevIsSep) {
         const cols = trimmed.split('|').filter((c) => c.trim()).length;
         if (out.length > 0 && out[out.length - 1].trim() !== '' && !out[out.length - 1].trim().startsWith('|')) {
@@ -177,7 +269,7 @@ function fixGfmTables(md: string): string {
 
 // ── Marked instance ──
 
-function createMarkedInstance(): Marked {
+function createMarkedInstance(visuals: VisualConfig): Marked {
   const marked = new Marked({ gfm: true, breaks: false });
 
   marked.use({
@@ -186,6 +278,13 @@ function createMarkedInstance(): Marked {
         const { text, lang } = token;
         if (lang) {
           const safeLang = lang.toLowerCase();
+
+          // Mermaid: emit placeholder for Puppeteer to render
+          if (safeLang === 'mermaid' && visuals.mermaid.enabled) {
+            const cleaned = sanitizeMermaidSyntax(text);
+            return `<div class="mermaid-container"><pre class="mermaid">${cleaned}</pre></div>\n`;
+          }
+
           if (safeLang === 'html' || safeLang === 'htm') {
             return `<pre><code class="language-html">${escapeHtml(text)}</code></pre>\n`;
           }
@@ -243,10 +342,13 @@ function createMarkedInstance(): Marked {
 
 // ── Pre-process a pure-markdown string before feeding to marked ──
 
-function preprocessMarkdown(md: string): string {
+function preprocessMarkdown(md: string, visuals: VisualConfig): string {
   let out = normalizeMarkdownStructure(md);
   out = stripBannedFences(out);
   out = fixGfmTables(out);
+  if (visuals.equations.enabled) {
+    out = preprocessMath(out);
+  }
   return out;
 }
 
@@ -344,16 +446,20 @@ function repairLeakedMarkdown(html: string, marked: Marked): string {
  * Convert structured content segments to HTML. Raw HTML segments pass through
  * untouched; markdown segments are parsed independently by marked. This
  * guarantees that CommonMark HTML-block rules never swallow markdown content.
+ *
+ * When visuals.equations.enabled is true, LaTeX math is pre-rendered with KaTeX.
+ * When visuals.mermaid.enabled is true, ```mermaid blocks become <pre class="mermaid">
+ * placeholders for Puppeteer to render.
  */
-export function segmentsToHtml(segments: ContentSegment[]): string {
-  const marked = createMarkedInstance();
+export function segmentsToHtml(segments: ContentSegment[], visuals: VisualConfig = DEFAULT_VISUAL_CONFIG): string {
+  const marked = createMarkedInstance(visuals);
   const htmlParts: string[] = [];
 
   for (const seg of segments) {
     if (seg.type === 'html') {
       htmlParts.push(seg.content);
     } else {
-      const preprocessed = preprocessMarkdown(seg.content);
+      const preprocessed = preprocessMarkdown(seg.content, visuals);
       let rendered = marked.parse(preprocessed) as string;
 
       if (detectSwallowedContentInCodeBlocks(rendered)) {
@@ -380,9 +486,9 @@ export function segmentsToHtml(segments: ContentSegment[]): string {
  * Splits the string into raw-HTML and markdown regions using a state machine,
  * then parses each markdown region independently.
  */
-export function markdownToHtml(markdown: string): string {
+export function markdownToHtml(markdown: string, visuals: VisualConfig = DEFAULT_VISUAL_CONFIG): string {
   const segments = splitFlatMarkdownIntoSegments(markdown);
-  return segmentsToHtml(segments);
+  return segmentsToHtml(segments, visuals);
 }
 
 /**
@@ -415,13 +521,11 @@ function splitFlatMarkdownIntoSegments(md: string): ContentSegment[] {
 
   for (const line of lines) {
     if (!inHtml) {
-      // Detect standalone self-closing HTML tags (page-break divs, <hr/>, etc.)
       if (/^\s*<(?:div|hr)\b[^>]*\/>\s*$/i.test(line)) {
         flushMd();
         segments.push({ type: 'html', content: line });
         continue;
       }
-      // Detect start of a block-level <div> or <p> with style/class (structural HTML, not markdown)
       if (/^\s*<div[\s>]/i.test(line)) {
         flushMd();
         inHtml = true;
@@ -446,7 +550,6 @@ function splitFlatMarkdownIntoSegments(md: string): ContentSegment[] {
   }
 
   if (htmlBuf.length > 0) {
-    // Unclosed HTML block — flush as HTML anyway to avoid losing content
     flushHtml();
   }
   flushMd();

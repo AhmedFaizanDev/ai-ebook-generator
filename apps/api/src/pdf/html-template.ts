@@ -80,7 +80,14 @@ table {
   border-collapse: collapse;
   margin: 0.8em 0;
   font-size: 10pt;
+  page-break-inside: auto;
+}
+thead {
+  display: table-header-group;
+}
+tbody tr {
   page-break-inside: avoid;
+  break-inside: avoid;
 }
 th {
   background: #f0f0f0;
@@ -90,6 +97,9 @@ th, td {
   border: 1px solid #ccc;
   padding: 6px 10px;
   text-align: left;
+  vertical-align: top;
+  word-break: break-word;
+  hyphens: auto;
 }
 code {
   font-family: 'Consolas', monospace;
@@ -153,6 +163,10 @@ a {
   margin-bottom: 0;
   line-height: 1.25;
   font-weight: bold;
+  text-wrap: balance;
+  max-width: 100%;
+  hyphens: manual;
+  text-align: center;
 }
 .cover-page .cover-spacer {
   flex: 1;
@@ -330,9 +344,112 @@ a {
   list-style: none !important;
   list-style-type: none !important;
 }
+
+/* --- Math (KaTeX) --- */
+.math-display {
+  text-align: center;
+  margin: 0.8em 0;
+  overflow-x: auto;
+  page-break-inside: avoid;
+}
+.math-inline {
+  display: inline;
+}
+.katex { font-size: 1.05em; }
+.katex-display { margin: 0.6em 0; overflow-x: auto; }
+table .katex { font-size: 0.88em; }
+table .math-display { margin: 0.35em 0; }
+
+/* --- Mermaid diagrams --- */
+.mermaid-container {
+  text-align: center;
+  margin: 1em 0;
+  page-break-inside: avoid;
+}
+.mermaid-container pre.mermaid {
+  background: none;
+  border: none;
+  border-left: none;
+  padding: 0;
+  text-align: center;
+}
+.mermaid-container svg {
+  max-width: 100%;
+  max-height: 500px;
+  height: auto;
+}
 `;
 
-export function wrapInHtmlTemplate(bodyHtml: string, highlightCss: string): string {
+import fs from 'fs';
+import path from 'path';
+
+/**
+ * Loaded after katex.min.css so PDF print rules win. Justified body text
+ * stretches gaps between KaTeX spans and fragments derivatives (e.g. f′).
+ */
+export const PRINT_MATH_OVERRIDES = `
+p:has(.katex),
+p:has(.math-inline),
+li:has(.katex) {
+  text-align: left !important;
+  hyphens: none !important;
+  word-spacing: normal !important;
+}
+p:has(.math-display),
+p:has(.katex-display) {
+  text-align: left !important;
+}
+td .katex, th .katex {
+  text-align: left !important;
+}
+td:has(.katex), th:has(.katex) {
+  hyphens: none !important;
+  -webkit-hyphens: none !important;
+}
+.math-display,
+.katex-display {
+  text-align: center !important;
+  word-spacing: normal !important;
+  letter-spacing: normal !important;
+}
+.math-display .katex,
+.katex-display > .katex {
+  word-spacing: normal !important;
+  letter-spacing: normal !important;
+}
+.math-display,
+.katex-display {
+  display: block !important;
+  max-width: 100% !important;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+@media print {
+  .math-display .katex,
+  .katex-display > .katex {
+    font-size: 0.88em !important;
+  }
+}
+`;
+
+let katexCssCache: string | null = null;
+
+export function getMathCss(): string {
+  if (!katexCssCache) {
+    try {
+      const katexCssPath = require.resolve('katex/dist/katex.min.css');
+      katexCssCache = fs.readFileSync(katexCssPath, 'utf-8');
+    } catch {
+      console.warn('[html-template] Could not load katex.min.css — math may render without styles');
+      katexCssCache = '';
+    }
+  }
+  return katexCssCache;
+}
+
+export function wrapInHtmlTemplate(bodyHtml: string, highlightCss: string, options?: { mathEnabled?: boolean }): string {
+  const mathCss = options?.mathEnabled ? getMathCss() : '';
+  const mathOverrides = options?.mathEnabled ? PRINT_MATH_OVERRIDES : '';
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -340,6 +457,8 @@ export function wrapInHtmlTemplate(bodyHtml: string, highlightCss: string): stri
 <style>
 ${PRINT_CSS}
 ${highlightCss}
+${mathCss}
+${mathOverrides}
 </style>
 </head>
 <body>

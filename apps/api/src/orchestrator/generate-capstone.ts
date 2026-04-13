@@ -4,6 +4,7 @@ import { callLLM } from '@/lib/openai-client';
 import { incrementCounters } from '@/lib/counters';
 import { buildSystemPrompt } from '@/prompts/system';
 import { buildBatchedCapstonePrompt, buildCapstonePrompt } from '@/prompts/capstone';
+import { enforceContentAggregateAndH2Sections } from './section-enforce';
 
 function splitBatchedOutput(raw: string, expectedCount: number): string[] | null {
   const parts = raw.split(/\n---\n/).map((p) => p.trim()).filter((p) => p.length > 0);
@@ -48,7 +49,9 @@ export async function generateCapstones(session: SessionState): Promise<string> 
         }
         return md;
       });
-      return '# Capstone Projects\n\n' + fixed.join('\n\n---\n\n');
+      const out = '# Capstone Projects\n\n' + fixed.join('\n\n---\n\n');
+      enforceContentAggregateAndH2Sections(session, out, 'capstones');
+      return out;
     }
 
     console.warn('[capstones] Batched output could not be split; falling back to per-item calls');
@@ -85,5 +88,7 @@ export async function generateCapstones(session: SessionState): Promise<string> 
     parts.push(md);
   }
 
-  return '# Capstone Projects\n\n' + parts.join('\n\n---\n\n');
+  const out = '# Capstone Projects\n\n' + parts.join('\n\n---\n\n');
+  enforceContentAggregateAndH2Sections(session, out, 'capstones');
+  return out;
 }

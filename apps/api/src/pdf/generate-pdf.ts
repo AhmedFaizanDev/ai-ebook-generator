@@ -4,6 +4,8 @@ import { segmentsToHtml, markdownToHtml, getHighlightCss } from './markdown-to-h
 import { buildSegments } from '@/orchestrator/build-markdown';
 import { wrapInHtmlTemplate } from './html-template';
 import { getBrowser, closeBrowser } from './browser-pool';
+import { auditExportHtml } from './export-preflight';
+import { buildExportQualityReport } from '@/orchestrator/content-validator';
 
 const MAX_CHUNK_CHARS = 350_000;
 
@@ -61,16 +63,27 @@ export async function exportPDF(session: SessionState): Promise<void> {
     throw new Error('No finalMarkdown to render');
   }
 
+  const visuals = session.visuals;
   // Prefer structured segments (each md segment parsed independently by marked)
   // over flat finalMarkdown to prevent CommonMark HTML-block poisoning.
   const segments = buildSegments(session);
   const fullHtml = segments.length > 0
-    ? segmentsToHtml(segments)
-    : markdownToHtml(session.finalMarkdown);
+    ? segmentsToHtml(segments, visuals)
+    : markdownToHtml(session.finalMarkdown, visuals);
   const highlightCss = getHighlightCss();
 
   if (!fullHtml || fullHtml.trim().length === 0) {
     throw new Error('Converted HTML is empty — cannot generate PDF');
+  }
+
+  // Preflight audit: detect leaked markdown/math/mermaid
+  if (session.visuals?.strictMode) {
+    const preflightErrors = auditExportHtml(fullHtml);
+    if (preflightErrors.length > 0) {
+      const summary = preflightErrors.map((e) => `[${e.type}] ${e.message}`).join('; ');
+      console.error(`[PDF] Export preflight failed (${preflightErrors.length} errors): ${summary}`);
+      throw new Error(`Export preflight failed: ${summary}`);
+    }
   }
 
   const byH1 = splitHtmlByH1(fullHtml);
@@ -107,7 +120,7 @@ export async function exportPDF(session: SessionState): Promise<void> {
   console.log(`[PDF] Rendering ${htmlChunks.length} chunks...`);
 
   for (let i = 0; i < htmlChunks.length; i++) {
-    const wrappedHtml = wrapInHtmlTemplate(htmlChunks[i], highlightCss);
+    const wrappedHtml = wrapInHtmlTemplate(htmlChunks[i], highlightCss, { mathEnabled: visuals?.equations?.enabled });
     let lastErr: Error | null = null;
 
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
@@ -136,10 +149,60 @@ export async function exportPDF(session: SessionState): Promise<void> {
       }
 
       try {
-        // Lay out at A4 width so full-width elements (e.g. copyright catalog box) span correctly
-        await page.setViewport({ width: 794, height: 1123 }); // A4 at 96dpi
+        await page.setViewport({ width: 794, height: 1123 });
         await page.setContent(wrappedHtml, { waitUntil: 'load', timeout: 120_000 });
-        // Short delay so images and layout settle before PDF (reduces "Target closed" in Docker)
+
+        // Render Mermaid diagrams if any <pre class="mermaid"> exist
+        if (visuals?.mermaid?.enabled) {
+          const hasMermaid = await page.evaluate(() => document.querySelectorAll('pre.mermaid').length > 0);
+          if (hasMermaid) {
+            await page.addScriptTag({ url: 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js' });
+            await page.evaluate(() => {
+              (window as any).mermaid.initialize({
+                startOnLoad: false,
+                theme: 'default',
+                securityLevel: 'loose',
+                flowchart: { useMaxWidth: true, htmlLabels: true },
+              });
+              return (window as any).mermaid.run({ querySelector: 'pre.mermaid' });
+            });
+            await new Promise((r) => setTimeout(r, 1000));
+
+            // Verify each mermaid container rendered to SVG
+            const mermaidResults: { total: number; failed: number; failedTexts: string[] } = await page.evaluate(() => {
+              const containers = document.querySelectorAll('.mermaid-container');
+              let failed = 0;
+              const failedTexts: string[] = [];
+              containers.forEach((c) => {
+                const svg = c.querySelector('svg');
+                const hasSyntaxError = c.textContent?.toLowerCase().includes('syntax error') ?? false;
+                if (!svg || hasSyntaxError) {
+                  failed++;
+                  failedTexts.push((c.textContent ?? '').slice(0, 120));
+                  (c as HTMLElement).style.display = 'none';
+                } else {
+                  svg.setAttribute('style', 'max-width:100%;max-height:500px;height:auto;');
+                  if (!svg.getAttribute('viewBox') && svg.getBBox) {
+                    try {
+                      const bb = svg.getBBox();
+                      svg.setAttribute('viewBox', `0 0 ${bb.width} ${bb.height}`);
+                    } catch { /* ignore */ }
+                  }
+                }
+              });
+              return { total: containers.length, failed, failedTexts };
+            });
+
+            if (mermaidResults.failed > 0) {
+              console.warn(`[PDF] ${mermaidResults.failed}/${mermaidResults.total} mermaid diagram(s) failed to render in chunk ${i + 1}`);
+              if (visuals.strictMode) {
+                const detail = mermaidResults.failedTexts.join(' | ');
+                throw new Error(`Mermaid render failed for ${mermaidResults.failed} diagram(s): ${detail}`);
+              }
+            }
+          }
+        }
+
         await new Promise((r) => setTimeout(r, 1500));
         const pdfUint8 = await page.pdf(pdfOptions);
         pdfBuffers.push(Buffer.from(pdfUint8));
@@ -195,6 +258,15 @@ export async function exportPDF(session: SessionState): Promise<void> {
   }
 
   session.pdfBuffer = Buffer.from(await merged.save());
+
+  // Emit quality report
+  if (session.finalMarkdown) {
+    const report = buildExportQualityReport(session.finalMarkdown, visuals);
+    if (report.qualityWarnings.length > 0) {
+      console.warn(`[PDF] Quality warnings (${report.qualityWarnings.length}): ${report.qualityWarnings.map((w) => w.message).join('; ')}`);
+    }
+    console.log(`[PDF] Quality report: ${report.validBlocks}/${report.totalBlocks} blocks valid, ${report.leakErrors} leak errors, ${report.qualityWarnings.length} style warnings`);
+  }
 
   session.finalMarkdown = null;
 

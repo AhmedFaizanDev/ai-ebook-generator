@@ -1,4 +1,6 @@
-import { VisualValidationResult } from '@/lib/types';
+import type { VisualValidationResult, VisualConfig, ContentBlockError } from '@/lib/types';
+import { DEFAULT_VISUAL_CONFIG } from '@/lib/types';
+import { validateContentBlocks } from './content-validator';
 
 const TABLE_RE = /^\|.+\|/m;
 const TABLE_SEPARATOR_RE = /^\|[\s:|\-]+\|/m;
@@ -25,7 +27,7 @@ function extractSubsectionBlock(md: string): string | null {
   return nextHeading === -1 ? rest : rest.slice(0, nextHeading);
 }
 
-export function visualValidator(md: string): VisualValidationResult {
+export function visualValidator(md: string, visuals: VisualConfig = DEFAULT_VISUAL_CONFIG): VisualValidationResult {
   const hasTable = hasTableIn(md);
 
   const subsectionBlock = extractSubsectionBlock(md);
@@ -35,7 +37,12 @@ export function visualValidator(md: string): VisualValidationResult {
     ? hasTableIn(subsectionBlock!)
     : false;
 
-  const pass = hasTable && (hasRequiredSubsection ? visualInSubsection : true);
+  const tablePass = hasTable && (hasRequiredSubsection ? visualInSubsection : true);
 
-  return { hasTable, hasAsciiDiagram: false, hasRequiredSubsection, pass };
+  const contentResult = validateContentBlocks(md, visuals);
+  const allErrors: ContentBlockError[] = [...contentResult.errors];
+
+  const pass = tablePass && contentResult.pass;
+
+  return { hasTable, hasAsciiDiagram: false, hasRequiredSubsection, pass, errors: allErrors };
 }

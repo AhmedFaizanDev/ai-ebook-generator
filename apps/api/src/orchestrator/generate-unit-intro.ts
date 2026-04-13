@@ -4,6 +4,7 @@ import { callLLM } from '@/lib/openai-client';
 import { incrementCounters } from '@/lib/counters';
 import { buildSystemPrompt } from '@/prompts/system';
 import { buildUnitIntroductionPrompt } from '@/prompts/unit-introduction';
+import { enforceContentAfterGeneration } from './section-enforce';
 
 export async function generateUnitIntro(
   session: SessionState,
@@ -32,5 +33,7 @@ export async function generateUnitIntro(
   });
 
   incrementCounters(session, result.totalTokens);
-  return result.content.trim();
+  const md = result.content.trim();
+  enforceContentAfterGeneration(session, md, `unit-intro-${unitIndex + 1}`);
+  return md;
 }

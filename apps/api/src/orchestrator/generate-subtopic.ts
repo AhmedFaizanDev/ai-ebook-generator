@@ -5,18 +5,22 @@ import { buildSystemPrompt } from '@/prompts/system';
 import { buildSubtopicPrompt } from '@/prompts/subtopic';
 import { buildVisualRetryPrompt } from '@/prompts/subtopic-visual-retry';
 import { visualValidator } from './visual-validator';
+import { ContentValidationError } from './content-validation-error';
+
+export { ContentValidationError } from './content-validation-error';
 
 export async function generateSubtopic(
   ctx: SubtopicContext,
   session: SessionState
 ): Promise<string> {
+  const visuals = session.visuals;
   const userPrompt = buildSubtopicPrompt(ctx);
   const sectionId = `${ctx.unitIndex + 1}.${ctx.subtopicIndex + 1}`;
 
   const label = `subtopic U${ctx.unitIndex + 1}/S${ctx.subtopicIndex + 1}`;
   const result = await callLLM({
     model: ctx.model,
-    systemPrompt: buildSystemPrompt(session.isTechnical),
+    systemPrompt: buildSystemPrompt(session.isTechnical, visuals),
     userPrompt,
     maxTokens: 1800,
     temperature: 0.4,
@@ -33,15 +37,18 @@ export async function generateSubtopic(
     markdown = `## ${sectionId} ${ctx.subtopicTitle}\n\n${markdown}`;
   }
 
-  const validation = visualValidator(markdown);
+  const validation = visualValidator(markdown, visuals);
 
   if (!validation.pass) {
+    const hasContentErrors = validation.errors.length > 0;
+    console.warn(`[subtopic] Validation failed for ${label} (${validation.errors.length} content errors, table=${validation.hasTable}). Attempting auto-fix retry...`);
+
     try {
-      const retryPrompt = buildSubtopicPrompt(ctx) + '\n\n' + buildVisualRetryPrompt(ctx.subtopicTitle, session.isTechnical);
+      const retryPrompt = buildSubtopicPrompt(ctx) + '\n\n' + buildVisualRetryPrompt(ctx.subtopicTitle, session.isTechnical, visuals, validation.errors);
 
       const retryResult = await callLLM({
         model: ctx.model,
-        systemPrompt: buildSystemPrompt(session.isTechnical),
+        systemPrompt: buildSystemPrompt(session.isTechnical, visuals),
         userPrompt: retryPrompt,
         maxTokens: 1800,
         temperature: 0.4,
@@ -58,12 +65,23 @@ export async function generateSubtopic(
         retryMarkdown = `## ${sectionId} ${ctx.subtopicTitle}\n\n${retryMarkdown}`;
       }
 
-      const retryValidation = visualValidator(retryMarkdown);
+      const retryValidation = visualValidator(retryMarkdown, visuals);
       if (retryValidation.pass) {
         return retryMarkdown;
       }
+
+      // Hard-fail when strict mode is on and there are content-level errors after retry
+      if (visuals.strictMode && retryValidation.errors.length > 0) {
+        throw new ContentValidationError(label, retryValidation.errors);
+      }
     } catch (retryErr) {
-      console.warn(`[subtopic] Visual retry failed for ${label}, using original content: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`);
+      if (retryErr instanceof ContentValidationError) throw retryErr;
+      console.warn(`[subtopic] Visual retry error for ${label}: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`);
+    }
+
+    // Hard-fail on content errors in strict mode even if retry threw a non-validation error
+    if (visuals.strictMode && hasContentErrors) {
+      throw new ContentValidationError(label, validation.errors);
     }
   }
 

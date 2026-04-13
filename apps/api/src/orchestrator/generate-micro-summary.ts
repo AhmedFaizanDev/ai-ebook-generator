@@ -4,6 +4,7 @@ import { callLLM } from '@/lib/openai-client';
 import { incrementCounters } from '@/lib/counters';
 import { buildSystemPrompt } from '@/prompts/system';
 import { buildMicroSummaryPrompt } from '@/prompts/micro-summary';
+import { enforceContentAfterGeneration } from './section-enforce';
 
 function truncateToTokenEstimate(text: string, targetTokens: number): string {
   const charEstimate = targetTokens * 4;
@@ -32,5 +33,7 @@ export async function generateMicroSummary(
   });
 
   incrementCounters(session, result.totalTokens);
-  return result.content.trim();
+  const md = result.content.trim();
+  enforceContentAfterGeneration(session, md, `micro-summary: ${subtopicTitle}`);
+  return md;
 }
