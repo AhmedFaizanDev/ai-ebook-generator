@@ -475,27 +475,7 @@ async function main(): Promise<void> {
     }
   }
 
-  // Filter out blocked domains (STEM domains paused for this batch run)
-  const BLOCKED_DOMAINS = new Set(['physics', 'chemistry', 'mathematics', 'maths', 'engineering']);
-  const blockedCount = new Map<string, number>();
-  const filteredRows: BatchRow[] = [];
-  for (const r of rows) {
-    const domainKey = (r.domain ?? '').trim().toLowerCase();
-    if (BLOCKED_DOMAINS.has(domainKey)) {
-      blockedCount.set(r.domain ?? domainKey, (blockedCount.get(r.domain ?? domainKey) ?? 0) + 1);
-    } else {
-      filteredRows.push(r);
-    }
-  }
-  if (blockedCount.size > 0) {
-    const total = [...blockedCount.values()].reduce((a, b) => a + b, 0);
-    console.log(`[BATCH] Skipping ${total} title(s) from blocked domains:`);
-    for (const [domain, count] of blockedCount) {
-      console.log(`[BATCH]   - ${domain}: ${count}`);
-    }
-  }
-
-  const titles = filteredRows.map((r) => r.title);
+  const titles = rows.map((r) => r.title);
   const progress = loadProgress();
 
   // Deduplicate the failed list from previous runs
@@ -503,7 +483,7 @@ async function main(): Promise<void> {
   saveProgress(progress);
 
   const alreadyDone = new Set(progress.completed);
-  let remainingRows = filteredRows.filter((r) => !alreadyDone.has(r.title));
+  let remainingRows = rows.filter((r) => !alreadyDone.has(r.title));
   const retrying = remainingRows.filter((r) => progress.failed.includes(r.title));
 
   console.log(`[BATCH] Found ${titles.length} title(s). Already completed: ${alreadyDone.size}. Remaining: ${remainingRows.length}.`);
@@ -658,7 +638,7 @@ async function main(): Promise<void> {
     }
 
     round++;
-    remainingRows = filteredRows.filter((r) => !progress.completed.includes(r.title));
+    remainingRows = rows.filter((r) => !progress.completed.includes(r.title));
   }
 
   await closeBrowser().catch(() => {});
