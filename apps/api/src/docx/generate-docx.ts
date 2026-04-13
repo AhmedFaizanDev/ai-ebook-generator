@@ -143,12 +143,17 @@ async function rasterizeVisualsForDocx(html: string, mermaidEnabled: boolean): P
     if (mermaidEnabled) {
       const hasMermaid = await page.evaluate(() => document.querySelectorAll('pre.mermaid').length > 0);
       if (hasMermaid) {
-        await page.addScriptTag({ url: 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js' });
-        await page.evaluate(() => {
-          (window as any).mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose' });
-          return (window as any).mermaid.run({ querySelector: 'pre.mermaid' });
-        });
-        await new Promise((r) => setTimeout(r, 1000));
+        try {
+          await page.addScriptTag({ url: 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js' });
+          await page.evaluate(() => {
+            (window as any).mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose' });
+            return (window as any).mermaid.run({ querySelector: 'pre.mermaid' });
+          });
+          await new Promise((r) => setTimeout(r, 1000));
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`[DOCX] Mermaid runtime unavailable (${msg}); diagrams may be less accurate in DOCX.`);
+        }
       }
     }
 

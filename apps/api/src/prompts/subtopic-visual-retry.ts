@@ -12,7 +12,7 @@ export function buildVisualRetryPrompt(
     : 'Do NOT include code blocks, raw HTML, or markup. Do NOT use ```html for diagrams. Use tables and prose only.';
 
   const mathRule = visuals.equations.enabled
-    ? 'When using math, use LaTeX delimiters \\(...\\) for inline and \\[...\\] for display only. No $...$ or $$...$$. Ensure every delimiter is closed.'
+    ? 'When using math, use LaTeX delimiters \\(...\\) for inline and \\[...\\] for display only. No $...$ or $$...$$. Ensure every delimiter is closed. Use \\cdot or \\times for multiplication — not \\square or \\Box.'
     : 'Do NOT use mathematical equations, formulas, symbolic notation, or LaTeX-style expressions; explain quantitative relationships in plain prose.';
 
   const mermaidRule = visuals.mermaid.enabled

@@ -46,11 +46,23 @@ const SESSIONS_DIR = path.resolve(process.cwd(), '.sessions');
 const PROGRESS_FILE = process.env.BATCH_PROGRESS_FILE
   ? path.resolve(process.env.BATCH_PROGRESS_FILE)
   : path.resolve(process.cwd(), '.batch-progress.json');
+
+function parseEnvInt(name: string, fallback: number, min: number = 0): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < min) {
+    console.warn(`[BATCH] Invalid ${name}="${raw}", using default ${fallback}`);
+    return fallback;
+  }
+  return n;
+}
+
 const COOLDOWN_BETWEEN_BOOKS_MS = 5_000;
 /** Max automatic retry rounds for failed books in the same run (set BATCH_MAX_RETRY_ROUNDS to override). */
-const MAX_RETRY_ROUNDS = parseInt(process.env.BATCH_MAX_RETRY_ROUNDS ?? '5', 10);
+const MAX_RETRY_ROUNDS = parseEnvInt('BATCH_MAX_RETRY_ROUNDS', 5, 1);
 /** Cooldown (ms) before starting a retry round (set BATCH_COOLDOWN_BETWEEN_ROUNDS_MS to override). */
-const COOLDOWN_BETWEEN_ROUNDS_MS = parseInt(process.env.BATCH_COOLDOWN_BETWEEN_ROUNDS_MS ?? '30000', 10);
+const COOLDOWN_BETWEEN_ROUNDS_MS = parseEnvInt('BATCH_COOLDOWN_BETWEEN_ROUNDS_MS', 30_000, 0);
 /** Skip generation if PDF + DOCX already exist in Drive (duplicate prevention). Default: true. */
 const SKIP_IF_IN_DRIVE = process.env.BATCH_SKIP_IF_IN_DRIVE !== 'false';
 
@@ -68,7 +80,13 @@ interface BatchProgress {
 function loadProgress(): BatchProgress {
   try {
     if (fs.existsSync(PROGRESS_FILE)) {
-      return JSON.parse(fs.readFileSync(PROGRESS_FILE, 'utf-8'));
+      const parsed = JSON.parse(fs.readFileSync(PROGRESS_FILE, 'utf-8')) as Partial<BatchProgress>;
+      return {
+        completed: Array.isArray(parsed.completed) ? parsed.completed : [],
+        failed: Array.isArray(parsed.failed) ? parsed.failed : [],
+        startedAt: typeof parsed.startedAt === 'string' ? parsed.startedAt : new Date().toISOString(),
+        lastUpdatedAt: typeof parsed.lastUpdatedAt === 'string' ? parsed.lastUpdatedAt : new Date().toISOString(),
+      };
     }
   } catch {
     console.warn('[BATCH] Could not read progress file, starting fresh');
@@ -173,7 +191,26 @@ function getOrCreateSessionForBook(
   const existing = loadSessionById(sid);
   if (existing) {
     existing.lastActivityAt = Date.now();
-    if (!existing.visuals) existing.visuals = { ...DEFAULT_VISUAL_CONFIG };
+    existing.author = author?.trim() || undefined;
+    existing.isbn = isbn?.trim() || undefined;
+    if (typeof isTechnicalOverride === 'boolean') {
+      existing.isTechnical = isTechnicalOverride;
+    }
+    existing.visuals = {
+      ...DEFAULT_VISUAL_CONFIG,
+      ...(existing.visuals ?? {}),
+      ...visualsOverride,
+      equations: {
+        ...DEFAULT_VISUAL_CONFIG.equations,
+        ...(existing.visuals?.equations ?? {}),
+        ...(visualsOverride?.equations ?? {}),
+      },
+      mermaid: {
+        ...DEFAULT_VISUAL_CONFIG.mermaid,
+        ...(existing.visuals?.mermaid ?? {}),
+        ...(visualsOverride?.mermaid ?? {}),
+      },
+    };
     return { session: existing, resumed: true };
   }
   const session = createBatchSession(title, author, isbn, sid, isTechnicalOverride, visualsOverride);

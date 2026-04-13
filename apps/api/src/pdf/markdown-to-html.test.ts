@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { segmentsToHtml, markdownToHtml } from './markdown-to-html';
+import { segmentsToHtml, markdownToHtml, normalizeLatexForKatex } from './markdown-to-html';
 import type { VisualConfig } from '@/lib/types';
 import type { ContentSegment } from '@/orchestrator/build-markdown';
 
@@ -24,6 +24,18 @@ const allDisabled: VisualConfig = {
   autoFixAttempts: 1,
 };
 
+describe('normalizeLatexForKatex', () => {
+  it('replaces mistaken \\square / \\Box with \\cdot', () => {
+    expect(normalizeLatexForKatex(String.raw`\sum_i N_i \square M_i`)).toBe(String.raw`\sum_i N_i \cdot M_i`);
+    expect(normalizeLatexForKatex(String.raw`a \Box b`)).toBe(String.raw`a \cdot b`);
+  });
+
+  it('normalizes unicode multiply glyphs to TeX commands', () => {
+    expect(normalizeLatexForKatex('a × b')).toBe(String.raw`a \times b`);
+    expect(normalizeLatexForKatex('a·b')).toBe(String.raw`a\cdotb`);
+  });
+});
+
 describe('segmentsToHtml - math rendering', () => {
   it('renders display math to KaTeX HTML when enabled', () => {
     const segments: ContentSegment[] = [{ type: 'md', content: 'Text\n\n\\[E = mc^2\\]\n\nMore' }];
@@ -40,6 +52,13 @@ describe('segmentsToHtml - math rendering', () => {
     expect(html).toContain('katex');
   });
 
+  it('renders multiline inline math spans', () => {
+    const segments: ContentSegment[] = [{ type: 'md', content: 'Text \\(x +\ny\\) end' }];
+    const html = segmentsToHtml(segments, mathEnabled);
+    expect(html).toContain('math-inline');
+    expect(html).toContain('katex');
+  });
+
   it('leaves math as-is when equations disabled', () => {
     const segments: ContentSegment[] = [{ type: 'md', content: 'Text \\[E = mc^2\\] end' }];
     const html = segmentsToHtml(segments, allDisabled);
@@ -51,6 +70,16 @@ describe('segmentsToHtml - math rendering', () => {
     const html = segmentsToHtml(segments, mathEnabled);
     expect(html).not.toContain('math-inline');
     expect(html).toContain('print');
+  });
+
+  it('renders \\square misuse as multiplication (cdot) in KaTeX output', () => {
+    const segments: ContentSegment[] = [
+      { type: 'md', content: String.raw`\[M_n = \frac{\sum_i N_i \square M_i}{\sum_i N_i}\]` },
+    ];
+    const html = segmentsToHtml(segments, mathEnabled);
+    expect(html).toContain('math-display');
+    expect(html).toContain('katex');
+    expect(html).not.toContain('\\square');
   });
 });
 

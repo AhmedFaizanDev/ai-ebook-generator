@@ -39,8 +39,24 @@ function escapeHtml(text: string): string {
 
 // ── KaTeX math rendering ──
 
+/**
+ * LLMs often emit \\square / \\Box (amssymb “end of proof” / shape symbols) between factors;
+ * KaTeX renders those as hollow squares — looks like a broken multiplication sign in PDFs.
+ * Unicode middle-dot / times glyphs can also become tofu depending on fonts; normalize to TeX.
+ */
+export function normalizeLatexForKatex(latex: string): string {
+  let s = latex;
+  s = s.replace(/\\square\b/g, '\\cdot');
+  s = s.replace(/\\Box\b/g, '\\cdot');
+  s = s.replace(/·|⋅|∙|\u2022/g, '\\cdot');
+  s = s.replace(/×/g, '\\times');
+  s = s.replace(/⊗/g, '\\otimes');
+  s = s.replace(/÷/g, '\\div');
+  return s;
+}
+
 function renderMath(latex: string, displayMode: boolean): string {
-  const source = latex.trim();
+  const source = normalizeLatexForKatex(latex.trim());
   if (!source) return '';
   try {
     return katex.renderToString(source, {
@@ -107,7 +123,7 @@ function preprocessMath(markdown: string): string {
         return rendered ? `\n<div class="math-display">${rendered}</div>\n` : '';
       });
 
-    return withDisplay.replace(/\\\((.+?)\\\)/g, (_m, expr: string) => {
+    return withDisplay.replace(/\\\(([\s\S]+?)\\\)/g, (_m, expr: string) => {
       const rendered = renderMath(expr, false);
       return rendered ? `<span class="math-inline">${rendered}</span>` : '';
     });

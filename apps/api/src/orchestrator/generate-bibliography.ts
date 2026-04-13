@@ -181,24 +181,32 @@ async function callBibliographyLLM(
 }
 
 function buildFallbackBibliography(topic: string, unitTitles: string[]): string {
-  const u1 = unitTitles[0] ?? topic;
-  const u2 = unitTitles[1] ?? topic;
-  const u3 = unitTitles[2] ?? topic;
+  const escapeForCitation = (s: string): string =>
+    s
+      .replace(/\r?\n+/g, ' ')
+      .replace(/"/g, "'")
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const safeTopic = escapeForCitation(topic);
+  const u1 = escapeForCitation(unitTitles[0] ?? topic);
+  const u2 = escapeForCitation(unitTitles[1] ?? topic);
+  const u3 = escapeForCitation(unitTitles[2] ?? topic);
 
   return `# Bibliography
 
 ### Books
-- Kumar and Mehta, "Foundations of ${topic}," Academic Press, 2018.
+- Kumar and Mehta, "Foundations of ${safeTopic}," Academic Press, 2018.
 - Robinson, "Applied Perspectives in ${u1}," Routledge, 2020.
 - Chen and Alvarez, "Methods and Practice in ${u2}," Springer, 2021.
 
 ### Research Papers & Standards
-- Patel et al., "A Review of Contemporary Research in ${topic}," International Journal of Applied Studies, 2021.
+- Patel et al., "A Review of Contemporary Research in ${safeTopic}," International Journal of Applied Studies, 2021.
 - Singh and Rao, "Comparative Frameworks for ${u1}," Journal of Professional Practice, 2019.
 - ISO, "Quality Management Systems - Fundamentals and Vocabulary," ISO, 2015.
 
 ### Online Resources
-- Encyclopaedia Britannica, "${topic}," Britannica, 2024.
+- Encyclopaedia Britannica, "${safeTopic}," Britannica, 2024.
 - National Library Digital Collections, "Reference Materials for ${u2}," National Library, 2023.
 - OECD Library, "Policy and Practice Resources Related to ${u3}," OECD, 2022.`;
 }

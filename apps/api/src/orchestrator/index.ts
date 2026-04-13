@@ -78,11 +78,12 @@ function isUnitComplete(session: SessionState, unitIdx: number): boolean {
 }
 
 function isPostUnitsComplete(session: SessionState): boolean {
+  const hasText = (s: string | null | undefined): boolean => !!s && s.trim().length > 0;
   return !!(
-    session.capstonesMarkdown &&
-    session.caseStudiesMarkdown &&
-    session.glossaryMarkdown &&
-    session.bibliographyMarkdown
+    hasText(session.capstonesMarkdown) &&
+    hasText(session.caseStudiesMarkdown) &&
+    hasText(session.glossaryMarkdown) &&
+    hasText(session.bibliographyMarkdown)
   );
 }
 
@@ -245,7 +246,7 @@ export async function orchestrate(session: SessionState): Promise<void> {
           ),
         { max: 2, label: `unit-${unitIdx + 1}-summary` }
       );
-      session.unitSummaries.push(unitSummary);
+      session.unitSummaries[unitIdx] = unitSummary;
       touch(session);
 
       // 2d + 2e: Unit End Summary + Unit Exercises in parallel

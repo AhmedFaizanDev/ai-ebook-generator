@@ -26,7 +26,7 @@ export function buildSubtopicPrompt(ctx: SubtopicContext): string {
   const sectionId = `${unitNum}.${subNum}`;
 
   const mathRule = visuals.equations.enabled
-    ? 'When a mathematical relationship genuinely needs symbolic notation, use LaTeX delimiters: inline \\(...\\) and display \\[...\\]. Do NOT use $...$ or $$...$$. Ensure every delimiter is closed. Put each complete formula in a single \\[...\\] block (e.g. attention, softmax, norms); do not split one equation across multiple blocks. After a display equation, define symbols in normal prose in the following paragraph (e.g. "Here Q, K, and V denote..."), not as a separate pseudo-equation per symbol.'
+    ? 'When a mathematical relationship genuinely needs symbolic notation, use LaTeX delimiters: inline \\(...\\) and display \\[...\\]. Do NOT use $...$ or $$...$$. Ensure every delimiter is closed. Put each complete formula in a single \\[...\\] block (e.g. attention, softmax, norms); do not split one equation across multiple blocks. After a display equation, define symbols in normal prose in the following paragraph (e.g. "Here Q, K, and V denote..."), not as a separate pseudo-equation per symbol. For multiplication inside sums, products, or fractions use \\cdot or \\times only — never \\square or \\Box (those render as empty boxes in print).'
     : 'Do NOT use mathematical equations, formulas, symbolic notation, or LaTeX-style expressions; explain quantitative relationships in plain prose.';
 
   const mermaidRule = visuals.mermaid.enabled
