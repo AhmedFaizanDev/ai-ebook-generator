@@ -382,6 +382,14 @@ table .math-display { margin: 0.35em 0; }
 
 import fs from 'fs';
 import path from 'path';
+import { pathToFileURL } from 'url';
+
+/** Puppeteer setContent() resolves relative font URLs against about:blank — rewrite to file:// so KaTeX glyphs load in PDF. */
+function rewriteKatexFontUrlsToFileUrls(css: string, cssFilePath: string): string {
+  const distDir = path.dirname(cssFilePath);
+  const fontsDirUrl = pathToFileURL(path.join(distDir, 'fonts')).href + '/';
+  return css.replace(/url\(fonts\//g, `url(${fontsDirUrl}`);
+}
 
 /**
  * Loaded after katex.min.css so PDF print rules win. Justified body text
@@ -438,7 +446,8 @@ export function getMathCss(): string {
   if (!katexCssCache) {
     try {
       const katexCssPath = require.resolve('katex/dist/katex.min.css');
-      katexCssCache = fs.readFileSync(katexCssPath, 'utf-8');
+      const raw = fs.readFileSync(katexCssPath, 'utf-8');
+      katexCssCache = rewriteKatexFontUrlsToFileUrls(raw, katexCssPath);
     } catch {
       console.warn('[html-template] Could not load katex.min.css — math may render without styles');
       katexCssCache = '';

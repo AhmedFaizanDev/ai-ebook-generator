@@ -49,8 +49,55 @@ const LATEX_ASCII_MULT = String.raw`\,.\,`;
  * LLMs often emit \\square / \\Box (amssymb “end of proof” / shape symbols) between factors;
  * Unicode box / middle-dot glyphs can render as tofu. Normalize to a simple math-period.
  */
-export function normalizeLatexForKatex(latex: string): string {
+function normalizeUnicodeOperatorsInLatex(latex: string): string {
   let s = latex;
+  s = s.replace(/\u2207/g, '\\nabla ');
+  s = s.replace(/\u2206/g, '\\Delta ');
+  s = s.replace(/\u2202/g, '\\partial ');
+  s = s.replace(/\u2212/g, '-');
+  s = s.replace(/\u221E/g, '\\infty ');
+  s = s.replace(/\u2264/g, '\\leq ');
+  s = s.replace(/\u2265/g, '\\geq ');
+  s = s.replace(/\u2260/g, '\\neq ');
+  s = s.replace(/\u2208/g, '\\in ');
+  s = s.replace(/\u2209/g, '\\notin ');
+  s = s.replace(/\u222B/g, '\\int ');
+  s = s.replace(/\u2211/g, '\\sum ');
+
+  s = s.replace(/[\u2080-\u2089]/g, (ch) => `_{${ch.codePointAt(0)! - 0x2080}}`);
+  for (let cp = 0x2090; cp <= 0x209c; cp++) {
+    const letter = SUBSCRIPT_LETTER_TO_ASCII[cp];
+    if (letter) s = s.split(String.fromCodePoint(cp)).join(`_{${letter}}`);
+  }
+
+  s = s.replace(/\u00b9/g, '^{1}');
+  s = s.replace(/\u00b2/g, '^{2}');
+  s = s.replace(/\u00b3/g, '^{3}');
+  s = s.replace(/\u2070/g, '^{0}');
+  s = s.replace(/\u2071/g, '^{i}');
+  s = s.replace(/\u2074/g, '^{4}');
+  s = s.replace(/\u2075/g, '^{5}');
+  s = s.replace(/\u2076/g, '^{6}');
+  s = s.replace(/\u2077/g, '^{7}');
+  s = s.replace(/\u2078/g, '^{8}');
+  s = s.replace(/\u2079/g, '^{9}');
+  s = s.replace(/\u207a/g, '^{+}');
+  s = s.replace(/\u207b/g, '^{-}');
+
+  for (let cp = 0x1d434; cp <= 0x1d44d; cp++) {
+    const ascii = String.fromCharCode(0x41 + (cp - 0x1d434));
+    s = s.split(String.fromCodePoint(cp)).join(ascii);
+  }
+  for (let cp = 0x1d44e; cp <= 0x1d467; cp++) {
+    const ascii = String.fromCharCode(0x61 + (cp - 0x1d44e));
+    s = s.split(String.fromCodePoint(cp)).join(ascii);
+  }
+
+  return s;
+}
+
+export function normalizeLatexForKatex(latex: string): string {
+  let s = normalizeUnicodeOperatorsInLatex(latex);
   s = s.replace(/\\square\b/g, LATEX_ASCII_MULT);
   s = s.replace(/\\Box\b/g, LATEX_ASCII_MULT);
   // Unicode box / square glyphs often used (or rendered) as bogus “multiply” or tofu
@@ -117,15 +164,202 @@ function transformOutsideCodeFences(md: string, fn: (segment: string) => string)
   return segments.map((s) => s.isFence ? s.text : fn(s.text)).join('\n');
 }
 
+/** Private-use chars to stash TeX math spans while normalizing Unicode chemistry in plain text. */
+const MATH_STASH_BASE = 0xe000;
+
+/** Subscript Latin letters U+2090–U+209C → ASCII (e.g. ₙ → n). */
+const SUBSCRIPT_LETTER_TO_ASCII: Record<number, string> = {
+  0x2090: 'a',
+  0x2091: 'e',
+  0x2092: 'o',
+  0x2093: 'x',
+  0x2094: 'e',
+  0x2095: 'h',
+  0x2096: 'k',
+  0x2097: 'l',
+  0x2098: 'm',
+  0x2099: 'n',
+  0x209a: 'p',
+  0x209b: 's',
+  0x209c: 't',
+};
+
+/**
+ * Unicode chemistry/math glyphs often have no glyph in PDF body fonts (Georgia/Times) or in Mermaid → tofu boxes.
+ * Replace with ASCII letters, digits, and simple punctuation so prose, GFM tables, raw HTML tables, and diagrams stay readable.
+ */
+export function normalizeUnicodeToPdfSafeAscii(input: string): string {
+  let out = '';
+  for (const ch of input) {
+    const c = ch.codePointAt(0)!;
+
+    if (c >= 0x2080 && c <= 0x2089) {
+      out += String(c - 0x2080);
+      continue;
+    }
+    if (c === 0x208a) {
+      out += '+';
+      continue;
+    }
+    if (c === 0x208b) {
+      out += '-';
+      continue;
+    }
+    if (c === 0x2070) {
+      out += '0';
+      continue;
+    }
+    if (c === 0x2071) {
+      out += 'i';
+      continue;
+    }
+    if (c === 0x2072) {
+      out += 'r';
+      continue;
+    }
+    if (c === 0x2073) {
+      out += 'v';
+      continue;
+    }
+    if (c >= 0x2074 && c <= 0x2079) {
+      out += String(c - 0x2074 + 4);
+      continue;
+    }
+    if (c === 0x207a) {
+      out += '+';
+      continue;
+    }
+    if (c === 0x207b) {
+      out += '-';
+      continue;
+    }
+    if (c === 0x00b9) {
+      out += '1';
+      continue;
+    }
+    if (c === 0x00b2) {
+      out += '2';
+      continue;
+    }
+    if (c === 0x00b3) {
+      out += '3';
+      continue;
+    }
+    if (c >= 0x2090 && c <= 0x209c) {
+      const mapped = SUBSCRIPT_LETTER_TO_ASCII[c];
+      if (mapped) {
+        out += mapped;
+        continue;
+      }
+    }
+
+    // Mathematical italic A–Z / a–z (models paste “𝑥” instead of “x”)
+    if (c >= 0x1d434 && c <= 0x1d44d) {
+      out += String.fromCharCode(0x41 + (c - 0x1d434));
+      continue;
+    }
+    if (c >= 0x1d44e && c <= 0x1d467) {
+      out += String.fromCharCode(0x61 + (c - 0x1d44e));
+      continue;
+    }
+
+    // Common math operators missing from serif PDF fonts
+    if (c === 0x2207) {
+      out += 'nabla';
+      continue;
+    }
+    if (c === 0x2206) {
+      out += 'Delta';
+      continue;
+    }
+    if (c === 0x2212) {
+      out += '-';
+      continue;
+    }
+    if (c === 0x00d7) {
+      out += 'x';
+      continue;
+    }
+    if (c === 0x00f7) {
+      out += '/';
+      continue;
+    }
+    if (c === 0x2248) {
+      out += '~';
+      continue;
+    }
+    if (c === 0x2260) {
+      out += '!=';
+      continue;
+    }
+    if (c === 0x2264) {
+      out += '<=';
+      continue;
+    }
+    if (c === 0x2265) {
+      out += '>=';
+      continue;
+    }
+    if (c === 0x221e) {
+      out += 'inf';
+      continue;
+    }
+    if (c === 0x22c5 || c === 0x00b7 || c === 0x2219 || c === 0x2022) {
+      out += '*';
+      continue;
+    }
+
+    out += ch;
+  }
+  return out;
+}
+
+/** @deprecated alias — behavior is full PDF-safe normalization, not only sub/sup */
+export const normalizeUnicodeSubSupToAscii = normalizeUnicodeToPdfSafeAscii;
+
 /** Avoid turning `$12 and $3` into one broken math span (non-greedy stops at first `$`). */
 function isProbablySingleDollarMath(expr: string): boolean {
   const t = expr.trim();
   if (!t) return false;
   if (/^\d+([.,]\d+)*$/.test(t)) return false;
   if (/^\d{1,3}(,\d{3})+(\.\d+)?$/.test(t)) return false;
+  if (/[\u2080-\u2089\u2070-\u2079\u207A\u207B\u00B9\u00B2\u00B3\u2200-\u22FF\u03B1-\u03C9]/.test(t)) return true;
+  if (/[^\x00-\x7F]/.test(t) && /[\\^_{}=]/.test(t)) return true;
   if (/\\[a-zA-Z]|[=^_{}]|[+\-*/×÷·⋅]/.test(t)) return true;
   if (/\s/.test(t)) return false;
   return /^[A-Za-z][A-Za-z0-9'’-]*$/.test(t);
+}
+
+/**
+ * Normalize Unicode chem glyphs outside math delimiters so TeX / KaTeX input stays intact.
+ * When `protectInlineDollarMath` is true, also stashes `$...$` spans that look like inline math.
+ */
+function normalizeUnicodeChemInPlainMarkdown(segment: string, protectInlineDollarMath: boolean): string {
+  const saved: string[] = [];
+  const stash = (full: string): string => {
+    saved.push(full);
+    return String.fromCharCode(MATH_STASH_BASE + saved.length - 1);
+  };
+
+  let s = segment.replace(/\$\$[\s\S]*?\$\$/g, stash);
+  s = s.replace(/\\\[[\s\S]*?\\\]/g, stash);
+  s = s.replace(/\\\([\s\S]*?\\\)/g, stash);
+
+  if (protectInlineDollarMath) {
+    s = s.replace(/(?<!\$)\$(?!\$)\s*((?:\\.|[^$])+?)\s*\$(?!\$)/g, (full, expr: string) => {
+      const t = expr.trim();
+      if (!t || !isProbablySingleDollarMath(t)) return full;
+      return stash(full);
+    });
+  }
+
+  s = normalizeUnicodeToPdfSafeAscii(s);
+
+  for (let i = saved.length - 1; i >= 0; i--) {
+    const ph = String.fromCharCode(MATH_STASH_BASE + i);
+    s = s.split(ph).join(saved[i]);
+  }
+  return s;
 }
 
 /** Plain `$...$` inline math (models often ignore \\(...\\) rules). Skip obvious currency like `$12`. */
@@ -168,7 +402,7 @@ function preprocessMath(markdown: string): string {
 // ── Mermaid sanitizer + placeholder ──
 
 function sanitizeMermaidSyntax(raw: string): string {
-  return raw
+  return normalizeUnicodeToPdfSafeAscii(raw)
     .replace(/\u201C|\u201D/g, '"')
     .replace(/\u2018|\u2019/g, "'")
     .replace(/\u2014/g, '--')
@@ -397,6 +631,9 @@ function preprocessMarkdown(md: string, visuals: VisualConfig): string {
   let out = normalizeMarkdownStructure(md);
   out = stripBannedFences(out);
   out = fixGfmTables(out);
+  out = transformOutsideCodeFences(out, (seg) =>
+    normalizeUnicodeChemInPlainMarkdown(seg, visuals.equations.enabled),
+  );
   if (visuals.equations.enabled) {
     out = preprocessMath(out);
   }
@@ -494,8 +731,8 @@ function repairLeakedMarkdown(html: string, marked: Marked): string {
 // ── Public API ──
 
 /**
- * Convert structured content segments to HTML. Raw HTML segments pass through
- * untouched; markdown segments are parsed independently by marked. This
+ * Convert structured content segments to HTML. Raw HTML segments are Unicode-normalized for PDF-safe
+ * ASCII (same rules as plain markdown outside math delimiters), then passed through; markdown segments are parsed independently by marked. This
  * guarantees that CommonMark HTML-block rules never swallow markdown content.
  *
  * When visuals.equations.enabled is true, LaTeX math is pre-rendered with KaTeX.
@@ -508,7 +745,7 @@ export function segmentsToHtml(segments: ContentSegment[], visuals: VisualConfig
 
   for (const seg of segments) {
     if (seg.type === 'html') {
-      htmlParts.push(seg.content);
+      htmlParts.push(normalizeUnicodeChemInPlainMarkdown(seg.content, visuals.equations.enabled));
     } else {
       const preprocessed = preprocessMarkdown(seg.content, visuals);
       let rendered = marked.parse(preprocessed) as string;

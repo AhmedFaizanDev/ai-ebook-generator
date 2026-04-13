@@ -4,7 +4,12 @@ import { callLLM } from '@/lib/openai-client';
 import { incrementCounters } from '@/lib/counters';
 import { buildSystemPrompt } from '@/prompts/system';
 import { buildBatchedCaseStudyPrompt, buildCaseStudyPrompt } from '@/prompts/case-study';
-import { enforceContentAggregateAndH2Sections } from './section-enforce';
+import { validateContentBlocks } from './content-validator';
+import {
+  enforceContentAggregateAndH2Sections,
+  isMarkdownFullyValidForSession,
+  runWithContentValidationRetries,
+} from './section-enforce';
 
 function splitBatchedOutput(raw: string, expectedCount: number): string[] | null {
   const parts = raw.split(/\n---\n/).map((p) => p.trim()).filter((p) => p.length > 0);
@@ -24,7 +29,7 @@ export async function generateCaseStudies(session: SessionState): Promise<string
       session.topic,
       structure.caseStudyTopics,
       session.unitSummaries,
-      session.isTechnical
+      session.isTechnical,
     );
 
     const batchResult = await callLLM({
@@ -50,41 +55,53 @@ export async function generateCaseStudies(session: SessionState): Promise<string
         return md;
       });
       const out = '# Case Studies\n\n' + fixed.join('\n\n---\n\n');
-      enforceContentAggregateAndH2Sections(session, out, 'case-studies');
-      return out;
+      if (isMarkdownFullyValidForSession(session, out)) {
+        enforceContentAggregateAndH2Sections(session, out, 'case-studies');
+        return out;
+      }
+      console.warn('[case-studies] Batched output failed content validation; falling back to per-item generation');
+    } else {
+      console.warn('[case-studies] Batched output could not be split; falling back to per-item calls');
     }
-
-    console.warn('[case-studies] Batched output could not be split; falling back to per-item calls');
   }
 
   const parts: string[] = [];
   for (let i = 0; i < CASE_STUDY_COUNT; i++) {
-    const userPrompt = buildCaseStudyPrompt(
-      session.topic,
-      i,
-      structure.caseStudyTopics[i],
-      session.unitSummaries,
-      session.isTechnical
+    const md = await runWithContentValidationRetries(
+      session,
+      `case-study ${i + 1}`,
+      (m) => {
+        const r = validateContentBlocks(m, session.visuals);
+        return { pass: r.pass, errors: r.errors };
+      },
+      async ({ repairSuffix }) => {
+        const userPrompt =
+          buildCaseStudyPrompt(
+            session.topic,
+            i,
+            structure.caseStudyTopics[i],
+            session.unitSummaries,
+            session.isTechnical,
+          ) + (repairSuffix ?? '');
+        const result = await callLLM({
+          model: session.model,
+          systemPrompt: buildSystemPrompt(session.isTechnical),
+          userPrompt,
+          maxTokens: 2600,
+          temperature: 0.35,
+          callLabel: repairSuffix ? `case-study ${i + 1} (validation repair)` : `case-study ${i + 1}`,
+          bookTitle: session.topic,
+          bookIndex: session.batchIndex,
+          bookTotal: session.batchTotal,
+        });
+        incrementCounters(session, result.totalTokens);
+        let chunk = result.content.trim();
+        if (!chunk.startsWith('## ')) {
+          chunk = `## Case Study ${i + 1}: ${structure.caseStudyTopics[i]}\n\n${chunk}`;
+        }
+        return chunk;
+      },
     );
-
-    const result = await callLLM({
-      model: session.model,
-      systemPrompt: buildSystemPrompt(session.isTechnical),
-      userPrompt,
-      maxTokens: 2600,
-      temperature: 0.35,
-      callLabel: `case-study ${i + 1}`,
-      bookTitle: session.topic,
-      bookIndex: session.batchIndex,
-      bookTotal: session.batchTotal,
-    });
-
-    incrementCounters(session, result.totalTokens);
-
-    let md = result.content.trim();
-    if (!md.startsWith('## ')) {
-      md = `## Case Study ${i + 1}: ${structure.caseStudyTopics[i]}\n\n${md}`;
-    }
     parts.push(md);
   }
 

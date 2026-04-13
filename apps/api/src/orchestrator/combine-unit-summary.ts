@@ -4,29 +4,38 @@ import { callLLM } from '@/lib/openai-client';
 import { incrementCounters } from '@/lib/counters';
 import { buildSystemPrompt } from '@/prompts/system';
 import { buildUnitSummaryCombinePrompt } from '@/prompts/unit-summary-combine';
-import { enforceContentAfterGeneration } from './section-enforce';
+import { validateContentBlocks } from './content-validator';
+import { runWithContentValidationRetries } from './section-enforce';
 
 export async function combineUnitSummary(
   unitTitle: string,
   microSummaries: string[],
   session: SessionState
 ): Promise<string> {
-  const userPrompt = buildUnitSummaryCombinePrompt(unitTitle, microSummaries);
+  const label = `unit-summary-combine: ${unitTitle}`;
 
-  const result = await callLLM({
-    model: LIGHT_MODEL,
-    systemPrompt: buildSystemPrompt(session.isTechnical),
-    userPrompt,
-    maxTokens: 150,
-    temperature: 0.15,
-    callLabel: `unit-summary: ${unitTitle}`,
-    bookTitle: session.topic,
-    bookIndex: session.batchIndex,
-    bookTotal: session.batchTotal,
-  });
-
-  incrementCounters(session, result.totalTokens);
-  const md = result.content.trim();
-  enforceContentAfterGeneration(session, md, `unit-summary-combine: ${unitTitle}`);
-  return md;
+  return runWithContentValidationRetries(
+    session,
+    label,
+    (md) => {
+      const r = validateContentBlocks(md, session.visuals);
+      return { pass: r.pass, errors: r.errors };
+    },
+    async ({ repairSuffix }) => {
+      const userPrompt = buildUnitSummaryCombinePrompt(unitTitle, microSummaries) + (repairSuffix ?? '');
+      const result = await callLLM({
+        model: LIGHT_MODEL,
+        systemPrompt: buildSystemPrompt(session.isTechnical),
+        userPrompt,
+        maxTokens: 150,
+        temperature: 0.15,
+        callLabel: repairSuffix ? `${label} (validation repair)` : `unit-summary: ${unitTitle}`,
+        bookTitle: session.topic,
+        bookIndex: session.batchIndex,
+        bookTotal: session.batchTotal,
+      });
+      incrementCounters(session, result.totalTokens);
+      return result.content.trim();
+    },
+  );
 }

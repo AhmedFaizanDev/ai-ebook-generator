@@ -5,85 +5,52 @@ import { buildSystemPrompt } from '@/prompts/system';
 import { buildSubtopicPrompt } from '@/prompts/subtopic';
 import { buildVisualRetryPrompt } from '@/prompts/subtopic-visual-retry';
 import { visualValidator } from './visual-validator';
-import { ContentValidationError } from './content-validation-error';
+import { runWithContentValidationRetries } from './section-enforce';
 
 export { ContentValidationError } from './content-validation-error';
 
 export async function generateSubtopic(
   ctx: SubtopicContext,
-  session: SessionState
+  session: SessionState,
 ): Promise<string> {
   const visuals = session.visuals;
-  const userPrompt = buildSubtopicPrompt(ctx);
   const sectionId = `${ctx.unitIndex + 1}.${ctx.subtopicIndex + 1}`;
-
   const label = `subtopic U${ctx.unitIndex + 1}/S${ctx.subtopicIndex + 1}`;
-  const result = await callLLM({
-    model: ctx.model,
-    systemPrompt: buildSystemPrompt(session.isTechnical, visuals),
-    userPrompt,
-    maxTokens: 1800,
-    temperature: 0.4,
-    callLabel: label,
-    bookTitle: session.topic,
-    bookIndex: session.batchIndex,
-    bookTotal: session.batchTotal,
-  });
 
-  incrementCounters(session, result.totalTokens);
-  let markdown = result.content;
+  return runWithContentValidationRetries(
+    session,
+    label,
+    (md) => {
+      const v = visualValidator(md, visuals);
+      return { pass: v.pass, errors: v.errors };
+    },
+    async ({ repairSuffix }) => {
+      let userPrompt = buildSubtopicPrompt(ctx);
+      if (repairSuffix) {
+        userPrompt +=
+          '\n\n' +
+          buildVisualRetryPrompt(ctx.subtopicTitle, session.isTechnical, visuals, []) +
+          repairSuffix;
+      }
 
-  if (!markdown.startsWith('## ')) {
-    markdown = `## ${sectionId} ${ctx.subtopicTitle}\n\n${markdown}`;
-  }
-
-  const validation = visualValidator(markdown, visuals);
-
-  if (!validation.pass) {
-    const hasContentErrors = validation.errors.length > 0;
-    console.warn(`[subtopic] Validation failed for ${label} (${validation.errors.length} content errors, table=${validation.hasTable}). Attempting auto-fix retry...`);
-
-    try {
-      const retryPrompt = buildSubtopicPrompt(ctx) + '\n\n' + buildVisualRetryPrompt(ctx.subtopicTitle, session.isTechnical, visuals, validation.errors);
-
-      const retryResult = await callLLM({
+      const result = await callLLM({
         model: ctx.model,
         systemPrompt: buildSystemPrompt(session.isTechnical, visuals),
-        userPrompt: retryPrompt,
+        userPrompt,
         maxTokens: 1800,
         temperature: 0.4,
-        callLabel: `${label} visual-retry`,
+        callLabel: repairSuffix ? `${label} (validation repair)` : label,
         bookTitle: session.topic,
         bookIndex: session.batchIndex,
         bookTotal: session.batchTotal,
       });
 
-      incrementCounters(session, retryResult.totalTokens);
-      let retryMarkdown = retryResult.content;
-
-      if (!retryMarkdown.startsWith('## ')) {
-        retryMarkdown = `## ${sectionId} ${ctx.subtopicTitle}\n\n${retryMarkdown}`;
+      incrementCounters(session, result.totalTokens);
+      let markdown = result.content;
+      if (!markdown.startsWith('## ')) {
+        markdown = `## ${sectionId} ${ctx.subtopicTitle}\n\n${markdown}`;
       }
-
-      const retryValidation = visualValidator(retryMarkdown, visuals);
-      if (retryValidation.pass) {
-        return retryMarkdown;
-      }
-
-      // Hard-fail when strict mode is on and there are content-level errors after retry
-      if (visuals.strictMode && retryValidation.errors.length > 0) {
-        throw new ContentValidationError(label, retryValidation.errors);
-      }
-    } catch (retryErr) {
-      if (retryErr instanceof ContentValidationError) throw retryErr;
-      console.warn(`[subtopic] Visual retry error for ${label}: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`);
-    }
-
-    // Hard-fail on content errors in strict mode even if retry threw a non-validation error
-    if (visuals.strictMode && hasContentErrors) {
-      throw new ContentValidationError(label, validation.errors);
-    }
-  }
-
-  return markdown;
+      return markdown;
+    },
+  );
 }

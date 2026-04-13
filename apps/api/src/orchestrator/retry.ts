@@ -1,3 +1,5 @@
+import { ContentValidationError } from './content-validation-error';
+
 export interface RetryOpts {
   max: number;
   baseDelay?: number;
@@ -19,6 +21,10 @@ export async function retry<T>(fn: () => Promise<T>, opts: RetryOpts): Promise<T
     try {
       return await fn();
     } catch (err: unknown) {
+      if (err instanceof ContentValidationError) {
+        throw err;
+      }
+
       const error = err as Record<string, unknown>;
       const msg = error.message && typeof error.message === 'string' ? error.message : String(err);
 

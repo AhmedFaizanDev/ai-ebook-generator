@@ -152,6 +152,10 @@ export async function exportPDF(session: SessionState): Promise<void> {
         await page.setViewport({ width: 794, height: 1123 });
         await page.setContent(wrappedHtml, { waitUntil: 'load', timeout: 120_000 });
 
+        if (visuals?.equations?.enabled) {
+          await page.evaluate(() => (document.fonts?.ready ? document.fonts.ready : Promise.resolve())).catch(() => {});
+        }
+
         // Render Mermaid diagrams if any <pre class="mermaid"> exist
         if (visuals?.mermaid?.enabled) {
           const hasMermaid = await page.evaluate(() => document.querySelectorAll('pre.mermaid').length > 0);

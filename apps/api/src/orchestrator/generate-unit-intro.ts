@@ -4,7 +4,8 @@ import { callLLM } from '@/lib/openai-client';
 import { incrementCounters } from '@/lib/counters';
 import { buildSystemPrompt } from '@/prompts/system';
 import { buildUnitIntroductionPrompt } from '@/prompts/unit-introduction';
-import { enforceContentAfterGeneration } from './section-enforce';
+import { validateContentBlocks } from './content-validator';
+import { runWithContentValidationRetries } from './section-enforce';
 
 export async function generateUnitIntro(
   session: SessionState,
@@ -12,28 +13,32 @@ export async function generateUnitIntro(
 ): Promise<string> {
   const structure = session.structure!;
   const unit = structure.units[unitIndex];
+  const label = `unit-intro-${unitIndex + 1}`;
 
-  const userPrompt = buildUnitIntroductionPrompt(
-    session.topic,
-    unitIndex,
-    unit.unitTitle,
-    unit.subtopics,
+  return runWithContentValidationRetries(
+    session,
+    label,
+    (md) => {
+      const r = validateContentBlocks(md, session.visuals);
+      return { pass: r.pass, errors: r.errors };
+    },
+    async ({ repairSuffix }) => {
+      const userPrompt =
+        buildUnitIntroductionPrompt(session.topic, unitIndex, unit.unitTitle, unit.subtopics) +
+        (repairSuffix ?? '');
+      const result = await callLLM({
+        model: LIGHT_MODEL,
+        systemPrompt: buildSystemPrompt(session.isTechnical),
+        userPrompt,
+        maxTokens: 600,
+        temperature: 0.3,
+        callLabel: repairSuffix ? `${label} (validation repair)` : label,
+        bookTitle: session.topic,
+        bookIndex: session.batchIndex,
+        bookTotal: session.batchTotal,
+      });
+      incrementCounters(session, result.totalTokens);
+      return result.content.trim();
+    },
   );
-
-  const result = await callLLM({
-    model: LIGHT_MODEL,
-    systemPrompt: buildSystemPrompt(session.isTechnical),
-    userPrompt,
-    maxTokens: 600,
-    temperature: 0.3,
-    callLabel: `unit-intro-${unitIndex + 1}`,
-    bookTitle: session.topic,
-    bookIndex: session.batchIndex,
-    bookTotal: session.batchTotal,
-  });
-
-  incrementCounters(session, result.totalTokens);
-  const md = result.content.trim();
-  enforceContentAfterGeneration(session, md, `unit-intro-${unitIndex + 1}`);
-  return md;
 }

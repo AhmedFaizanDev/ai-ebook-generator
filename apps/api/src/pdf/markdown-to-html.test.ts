@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { segmentsToHtml, markdownToHtml, normalizeLatexForKatex } from './markdown-to-html';
+import {
+  segmentsToHtml,
+  markdownToHtml,
+  normalizeLatexForKatex,
+  normalizeUnicodeSubSupToAscii,
+  normalizeUnicodeToPdfSafeAscii,
+} from './markdown-to-html';
 import type { VisualConfig } from '@/lib/types';
 import type { ContentSegment } from '@/orchestrator/build-markdown';
 
@@ -24,7 +30,33 @@ const allDisabled: VisualConfig = {
   autoFixAttempts: 1,
 };
 
+describe('normalizeUnicodeToPdfSafeAscii', () => {
+  it('maps Unicode sub/sup digits and signs to ASCII', () => {
+    expect(normalizeUnicodeToPdfSafeAscii('H\u2082CO\u2083')).toBe('H2CO3');
+    expect(normalizeUnicodeToPdfSafeAscii('HCO\u2083\u207B')).toBe('HCO3-');
+    expect(normalizeUnicodeToPdfSafeAscii('NH\u2084\u207A')).toBe('NH4+');
+    expect(normalizeUnicodeToPdfSafeAscii('CO\u2082')).toBe('CO2');
+    expect(normalizeUnicodeToPdfSafeAscii('x\u00B2 + y\u00B3')).toBe('x2 + y3');
+    expect(normalizeUnicodeToPdfSafeAscii('NO\u2082, O\u2083, CH\u2084')).toBe('NO2, O3, CH4');
+  });
+
+  it('maps nabla, dot operator, and math italic letters to ASCII', () => {
+    expect(normalizeUnicodeToPdfSafeAscii('The \u2207 operator')).toBe('The nabla operator');
+    expect(normalizeUnicodeToPdfSafeAscii('a\u22C5b')).toBe('a*b');
+    expect(normalizeUnicodeToPdfSafeAscii('\uD835\uDC65')).toBe('x'); // mathematical italic x (U+1D465)
+  });
+
+  it('alias normalizeUnicodeSubSupToAscii matches full normalizer', () => {
+    expect(normalizeUnicodeSubSupToAscii('CO\u2082')).toBe(normalizeUnicodeToPdfSafeAscii('CO\u2082'));
+  });
+});
+
 describe('normalizeLatexForKatex', () => {
+  it('maps Unicode nabla, dot, and subscripts to TeX-safe forms', () => {
+    expect(normalizeLatexForKatex('v\u22C5\u2207 C')).toContain('\\nabla');
+    expect(normalizeLatexForKatex('D\u2082O')).toContain('_{2}');
+  });
+
   it('replaces mistaken \\square / \\Box with ASCII mult dot', () => {
     const dot = String.raw`\,.\,`;
     expect(normalizeLatexForKatex(String.raw`\sum_i N_i \square M_i`)).toBe(String.raw`\sum_i N_i ` + dot + String.raw` M_i`);
@@ -80,6 +112,16 @@ describe('segmentsToHtml - math rendering', () => {
     expect(html).not.toContain('\\square');
   });
 
+  it('does not ASCII-strip Unicode operators inside $...$ before KaTeX', () => {
+    const segments: ContentSegment[] = [
+      { type: 'md', content: 'Dot and nabla in inline math: $v\u22C5\u2207 C$.' },
+    ];
+    const html = segmentsToHtml(segments, mathEnabled);
+    expect(html).toContain('math-inline');
+    expect(html).toContain('katex');
+    expect(html).not.toContain('v*nabla');
+  });
+
   it('does not treat plain currency as inline math', () => {
     const segments: ContentSegment[] = [{ type: 'md', content: 'Price is $12 and $3.50 today.' }];
     const html = segmentsToHtml(segments, mathEnabled);
@@ -111,6 +153,18 @@ describe('segmentsToHtml - math rendering', () => {
 });
 
 describe('segmentsToHtml - mermaid rendering', () => {
+  it('normalizes Unicode chemistry in mermaid node labels to ASCII', () => {
+    const segments: ContentSegment[] = [
+      {
+        type: 'md',
+        content: '```mermaid\ngraph TD\n  A[Atmospheric CO\u2082] --> B\n```',
+      },
+    ];
+    const html = segmentsToHtml(segments, mermaidEnabled);
+    expect(html).toContain('Atmospheric CO2');
+    expect(html).not.toContain('CO\u2082');
+  });
+
   it('converts mermaid fences to pre.mermaid placeholders when enabled', () => {
     const segments: ContentSegment[] = [{ type: 'md', content: '```mermaid\ngraph TD\n  A --> B\n```' }];
     const html = segmentsToHtml(segments, mermaidEnabled);
@@ -127,6 +181,18 @@ describe('segmentsToHtml - mermaid rendering', () => {
   });
 });
 
+describe('segmentsToHtml - raw html segments', () => {
+  it('normalizes Unicode chemistry inside html table cells (not only GFM)', () => {
+    const segments: ContentSegment[] = [
+      { type: 'html', content: '<table><tr><td>NO\u2082</td><td>O\u2083</td></tr></table>' },
+    ];
+    const html = segmentsToHtml(segments, allDisabled);
+    expect(html).toContain('NO2');
+    expect(html).toContain('O3');
+    expect(html).not.toContain('\u2082');
+  });
+});
+
 describe('segmentsToHtml - leak repair', () => {
   it('repairs headings leaked into paragraphs', () => {
     const segments: ContentSegment[] = [{ type: 'md', content: '## Heading\n\nParagraph\n## Leaked' }];
@@ -139,6 +205,20 @@ describe('segmentsToHtml - leak repair', () => {
     const html = segmentsToHtml(segments, allDisabled);
     expect(html).toContain('<table>');
     expect(html).toContain('<td');
+  });
+
+  it('normalizes Unicode chemistry in table cells to ASCII (no sub/sup tofu)', () => {
+    const segments: ContentSegment[] = [
+      {
+        type: 'md',
+        content:
+          '| Buffer | Components |\n|---|---|\n| Bicarbonate | H\u2082CO\u2083, HCO\u2083\u207B |\n',
+      },
+    ];
+    const html = segmentsToHtml(segments, allDisabled);
+    expect(html).toContain('H2CO3');
+    expect(html).toContain('HCO3-');
+    expect(html).not.toContain('\u2082');
   });
 });
 

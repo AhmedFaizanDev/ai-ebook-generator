@@ -4,7 +4,8 @@ import { callLLM } from '@/lib/openai-client';
 import { incrementCounters } from '@/lib/counters';
 import { buildSystemPrompt } from '@/prompts/system';
 import { buildUnitEndSummaryPrompt } from '@/prompts/unit-summary-end';
-import { enforceContentAfterGeneration } from './section-enforce';
+import { validateContentBlocks } from './content-validator';
+import { runWithContentValidationRetries } from './section-enforce';
 
 export async function generateUnitEndSummary(
   session: SessionState,
@@ -13,29 +14,37 @@ export async function generateUnitEndSummary(
   const structure = session.structure!;
   const unit = structure.units[unitIndex];
   const micros = session.microSummaries[unitIndex] ?? [];
+  const label = `unit-end-summary-${unitIndex + 1}`;
 
-  const userPrompt = buildUnitEndSummaryPrompt(
-    session.topic,
-    unitIndex,
-    unit.unitTitle,
-    unit.subtopics,
-    micros,
+  return runWithContentValidationRetries(
+    session,
+    label,
+    (md) => {
+      const r = validateContentBlocks(md, session.visuals);
+      return { pass: r.pass, errors: r.errors };
+    },
+    async ({ repairSuffix }) => {
+      const userPrompt =
+        buildUnitEndSummaryPrompt(
+          session.topic,
+          unitIndex,
+          unit.unitTitle,
+          unit.subtopics,
+          micros,
+        ) + (repairSuffix ?? '');
+      const result = await callLLM({
+        model: LIGHT_MODEL,
+        systemPrompt: buildSystemPrompt(session.isTechnical),
+        userPrompt,
+        maxTokens: 500,
+        temperature: 0.2,
+        callLabel: repairSuffix ? `${label} (validation repair)` : label,
+        bookTitle: session.topic,
+        bookIndex: session.batchIndex,
+        bookTotal: session.batchTotal,
+      });
+      incrementCounters(session, result.totalTokens);
+      return result.content.trim();
+    },
   );
-
-  const result = await callLLM({
-    model: LIGHT_MODEL,
-    systemPrompt: buildSystemPrompt(session.isTechnical),
-    userPrompt,
-    maxTokens: 500,
-    temperature: 0.2,
-    callLabel: `unit-end-summary-${unitIndex + 1}`,
-    bookTitle: session.topic,
-    bookIndex: session.batchIndex,
-    bookTotal: session.batchTotal,
-  });
-
-  incrementCounters(session, result.totalTokens);
-  const md = result.content.trim();
-  enforceContentAfterGeneration(session, md, `unit-end-summary-${unitIndex + 1}`);
-  return md;
 }

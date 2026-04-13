@@ -42,6 +42,24 @@ export function visualValidator(md: string, visuals: VisualConfig = DEFAULT_VISU
   const contentResult = validateContentBlocks(md, visuals);
   const allErrors: ContentBlockError[] = [...contentResult.errors];
 
+  if (!hasTable) {
+    allErrors.push({
+      type: 'markdown-leak',
+      blockIndex: 0,
+      source: '',
+      message:
+        'Include a GitHub-flavored markdown pipe table with a header row and a separator line (e.g. | Col A | Col B | then |---|---|).',
+    });
+  } else if (hasRequiredSubsection && !visualInSubsection) {
+    allErrors.push({
+      type: 'markdown-leak',
+      blockIndex: 0,
+      source: '',
+      message:
+        'Place the pipe table under ### Key Concepts, ### Process Overview, ### Diagram, or ### Reference Table (not only in the opening prose).',
+    });
+  }
+
   const pass = tablePass && contentResult.pass;
 
   return { hasTable, hasAsciiDiagram: false, hasRequiredSubsection, pass, errors: allErrors };
