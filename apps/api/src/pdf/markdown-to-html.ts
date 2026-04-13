@@ -40,18 +40,26 @@ function escapeHtml(text: string): string {
 // ── KaTeX math rendering ──
 
 /**
+ * Multiplication shown as a plain ASCII period with thin math spacing (\\,.\,).
+ * Avoids \\cdot / Unicode middle-dot / dot-operator glyphs that can render as boxes in PDFs.
+ */
+const LATEX_ASCII_MULT = String.raw`\,.\,`;
+
+/**
  * LLMs often emit \\square / \\Box (amssymb “end of proof” / shape symbols) between factors;
- * KaTeX renders those as hollow squares — looks like a broken multiplication sign in PDFs.
- * Unicode middle-dot / times glyphs can also become tofu depending on fonts; normalize to TeX.
+ * Unicode box / middle-dot glyphs can render as tofu. Normalize to a simple math-period.
  */
 export function normalizeLatexForKatex(latex: string): string {
   let s = latex;
-  s = s.replace(/\\square\b/g, '\\cdot');
-  s = s.replace(/\\Box\b/g, '\\cdot');
-  s = s.replace(/·|⋅|∙|\u2022/g, '\\cdot');
+  s = s.replace(/\\square\b/g, LATEX_ASCII_MULT);
+  s = s.replace(/\\Box\b/g, LATEX_ASCII_MULT);
+  // Unicode box / square glyphs often used (or rendered) as bogus “multiply” or tofu
+  s = s.replace(/[\u25A0-\u25A3\u25AA\u25AB\u25FB-\u25FE\u2610\u2611\u2B1C\u2B1D]/g, LATEX_ASCII_MULT);
+  s = s.replace(/·|⋅|∙|\u2022/g, LATEX_ASCII_MULT);
   s = s.replace(/×/g, '\\times');
   s = s.replace(/⊗/g, '\\otimes');
   s = s.replace(/÷/g, '\\div');
+  s = s.replace(/\\cdot\b/g, LATEX_ASCII_MULT);
   return s;
 }
 
@@ -109,6 +117,31 @@ function transformOutsideCodeFences(md: string, fn: (segment: string) => string)
   return segments.map((s) => s.isFence ? s.text : fn(s.text)).join('\n');
 }
 
+/** Avoid turning `$12 and $3` into one broken math span (non-greedy stops at first `$`). */
+function isProbablySingleDollarMath(expr: string): boolean {
+  const t = expr.trim();
+  if (!t) return false;
+  if (/^\d+([.,]\d+)*$/.test(t)) return false;
+  if (/^\d{1,3}(,\d{3})+(\.\d+)?$/.test(t)) return false;
+  if (/\\[a-zA-Z]|[=^_{}]|[+\-*/×÷·⋅]/.test(t)) return true;
+  if (/\s/.test(t)) return false;
+  return /^[A-Za-z][A-Za-z0-9'’-]*$/.test(t);
+}
+
+/** Plain `$...$` inline math (models often ignore \\(...\\) rules). Skip obvious currency like `$12`. */
+function replaceSingleDollarInlineMath(md: string): string {
+  return md.replace(
+    /(?<!\$)\$(?!\$)\s*((?:\\.|[^$])+?)\s*\$(?!\$)/g,
+    (full, expr: string) => {
+      const t = expr.trim();
+      if (!t) return full;
+      if (!isProbablySingleDollarMath(t)) return full;
+      const rendered = renderMath(t, false);
+      return rendered ? `<span class="math-inline">${rendered}</span>` : full;
+    },
+  );
+}
+
 function preprocessMath(markdown: string): string {
   if (!markdown || typeof markdown !== 'string') return markdown;
 
@@ -123,10 +156,12 @@ function preprocessMath(markdown: string): string {
         return rendered ? `\n<div class="math-display">${rendered}</div>\n` : '';
       });
 
-    return withDisplay.replace(/\\\(([\s\S]+?)\\\)/g, (_m, expr: string) => {
+    const withParen = withDisplay.replace(/\\\(([\s\S]+?)\\\)/g, (_m, expr: string) => {
       const rendered = renderMath(expr, false);
       return rendered ? `<span class="math-inline">${rendered}</span>` : '';
     });
+
+    return replaceSingleDollarInlineMath(withParen);
   });
 }
 

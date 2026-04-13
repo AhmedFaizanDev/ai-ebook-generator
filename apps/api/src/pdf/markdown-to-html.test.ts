@@ -25,14 +25,25 @@ const allDisabled: VisualConfig = {
 };
 
 describe('normalizeLatexForKatex', () => {
-  it('replaces mistaken \\square / \\Box with \\cdot', () => {
-    expect(normalizeLatexForKatex(String.raw`\sum_i N_i \square M_i`)).toBe(String.raw`\sum_i N_i \cdot M_i`);
-    expect(normalizeLatexForKatex(String.raw`a \Box b`)).toBe(String.raw`a \cdot b`);
+  it('replaces mistaken \\square / \\Box with ASCII mult dot', () => {
+    const dot = String.raw`\,.\,`;
+    expect(normalizeLatexForKatex(String.raw`\sum_i N_i \square M_i`)).toBe(String.raw`\sum_i N_i ` + dot + String.raw` M_i`);
+    expect(normalizeLatexForKatex(String.raw`a \Box b`)).toBe(`a ${dot} b`);
   });
 
-  it('normalizes unicode multiply glyphs to TeX commands', () => {
+  it('normalizes unicode multiply glyphs (dot → ASCII mult; × → times)', () => {
+    const dot = String.raw`\,.\,`;
     expect(normalizeLatexForKatex('a × b')).toBe(String.raw`a \times b`);
-    expect(normalizeLatexForKatex('a·b')).toBe(String.raw`a\cdotb`);
+    expect(normalizeLatexForKatex('a·b')).toBe(`a${dot}b`);
+  });
+
+  it('replaces unicode square/box glyphs with ASCII mult dot', () => {
+    const dot = String.raw`\,.\,`;
+    expect(normalizeLatexForKatex('V = I\u25A1R')).toBe(`V = I${dot}R`);
+  });
+
+  it('replaces explicit \\cdot with ASCII mult dot', () => {
+    expect(normalizeLatexForKatex(String.raw`a \cdot b`)).toBe(String.raw`a \,.\, b`);
   });
 });
 
@@ -57,6 +68,22 @@ describe('segmentsToHtml - math rendering', () => {
     const html = segmentsToHtml(segments, mathEnabled);
     expect(html).toContain('math-inline');
     expect(html).toContain('katex');
+  });
+
+  it('renders single-dollar inline math and normalizes \\square', () => {
+    const segments: ContentSegment[] = [
+      { type: 'md', content: String.raw`Ohm's law: $V = I \square R$ as text.` },
+    ];
+    const html = segmentsToHtml(segments, mathEnabled);
+    expect(html).toContain('math-inline');
+    expect(html).toContain('katex');
+    expect(html).not.toContain('\\square');
+  });
+
+  it('does not treat plain currency as inline math', () => {
+    const segments: ContentSegment[] = [{ type: 'md', content: 'Price is $12 and $3.50 today.' }];
+    const html = segmentsToHtml(segments, mathEnabled);
+    expect(html).not.toContain('math-inline');
   });
 
   it('leaves math as-is when equations disabled', () => {
