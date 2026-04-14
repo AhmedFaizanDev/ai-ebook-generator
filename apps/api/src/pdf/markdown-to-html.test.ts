@@ -46,6 +46,28 @@ describe('normalizeUnicodeToPdfSafeAscii', () => {
     expect(normalizeUnicodeToPdfSafeAscii('\uD835\uDC65')).toBe('x'); // mathematical italic x (U+1D465)
   });
 
+  it('maps logical operators and implication symbols to ASCII-safe forms', () => {
+    expect(normalizeUnicodeToPdfSafeAscii('\u00ac(p \u2228 q) \u21D2 \u00acp \u2227 \u00acq')).toBe('not (p  or  q) => not p  and  not q');
+    expect(normalizeUnicodeToPdfSafeAscii('p \u2194 q \u2261 (\u00acp \u2228 q)')).toBe('p <=> q == (not p  or  q)');
+  });
+
+  it('maps degree and square glyphs to PDF-safe text', () => {
+    expect(normalizeUnicodeToPdfSafeAscii('\u0394G\u00B0')).toBe('DeltaG degrees');
+    expect(normalizeUnicodeToPdfSafeAscii('A \u25A1 B')).toBe('A . B');
+  });
+
+  it('maps physics and chemistry symbols to ASCII-safe forms', () => {
+    expect(normalizeUnicodeToPdfSafeAscii('\u03BB = h/p, \u03BC = 3\u00B5A, R = 10\u03A9')).toBe('lambda = h/p, mu = 3muA, R = 10Ohm');
+    expect(normalizeUnicodeToPdfSafeAscii('H\u2082 + O\u2082 \u2192 H\u2082O')).toBe('H2 + O2 => H2O');
+    expect(normalizeUnicodeToPdfSafeAscii('A \u222a B, A \u2229 B, A \u2282 B')).toBe('A  union  B, A  intersect  B, A  subset of  B');
+  });
+
+  it('maps broad Unicode super/subscript variants to ASCII', () => {
+    expect(normalizeUnicodeToPdfSafeAscii('x\u207B\u00B9 + y\u207D\u207F\u207A\u00B9\u207E')).toBe('x-1 + y(n+1)');
+    expect(normalizeUnicodeToPdfSafeAscii('CO\u2083\u00B2\u207B + a\u208D\u1D62\u2C7C\u208E')).toBe('CO32- + a(ij)');
+    expect(normalizeUnicodeToPdfSafeAscii('t\u1D50 and v\u1D5B')).toBe('tm and vv');
+  });
+
   it('alias normalizeUnicodeSubSupToAscii matches full normalizer', () => {
     expect(normalizeUnicodeSubSupToAscii('CO\u2082')).toBe(normalizeUnicodeToPdfSafeAscii('CO\u2082'));
   });
@@ -55,6 +77,46 @@ describe('normalizeLatexForKatex', () => {
   it('maps Unicode nabla, dot, and subscripts to TeX-safe forms', () => {
     expect(normalizeLatexForKatex('v\u22C5\u2207 C')).toContain('\\nabla');
     expect(normalizeLatexForKatex('D\u2082O')).toContain('_{2}');
+  });
+
+  it('maps logical Unicode symbols to TeX operators', () => {
+    const normalized = normalizeLatexForKatex('\u00ac(p \u2228 q) \u21D4 (\u00acp \u2227 \u00acq)');
+    expect(normalized).toContain('\\neg');
+    expect(normalized).toContain('\\lor');
+    expect(normalized).toContain('\\land');
+    expect(normalized).toContain('\\Leftrightarrow');
+  });
+
+  it('maps degree symbol to TeX superscript degree', () => {
+    expect(normalizeLatexForKatex('\u0394G\u00B0')).toContain('^{\\circ}');
+  });
+
+  it('maps cross-subject Unicode symbols to TeX-safe equivalents', () => {
+    const normalized = normalizeLatexForKatex('\u03BB = h/p, \u03BC = 3\u00B5A, R=10\u03A9, A \u2229 B, x \u00B1 y, H\u2082 + O\u2082 \u2192 H\u2082O');
+    expect(normalized).toContain('\\lambda');
+    expect(normalized).toContain('\\mu');
+    expect(normalized).toContain('\\Omega');
+    expect(normalized).toContain('\\cap');
+    expect(normalized).toContain('\\pm');
+    expect(normalized).toContain('\\to');
+    expect(normalized).toContain('_{2}');
+  });
+
+  it('maps advanced physics symbols to TeX-safe equivalents', () => {
+    const normalized = normalizeLatexForKatex('\u210F\u03C9, F \u221D a, l\u2081 \u27C2 l\u2082, \u2220ABC');
+    expect(normalized).toContain('\\hbar');
+    expect(normalized).toContain('\\omega');
+    expect(normalized).toContain('\\propto');
+    expect(normalized).toContain('\\perp');
+    expect(normalized).toContain('\\angle');
+  });
+
+  it('groups superscript/subscript runs into single TeX groups', () => {
+    const normalized = normalizeLatexForKatex('x\u207B\u00B9 + y\u207D\u207F\u207A\u00B9\u207E + CO\u2083\u00B2\u207B + a\u208D\u1D62\u2C7C\u208E');
+    expect(normalized).toContain('x^{-1}');
+    expect(normalized).toContain('y^{(n+1)}');
+    expect(normalized).toContain('CO_{3}^{2-}');
+    expect(normalized).toContain('a_{(ij)}');
   });
 
   it('replaces mistaken \\square / \\Box with ASCII mult dot', () => {

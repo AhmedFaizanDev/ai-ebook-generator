@@ -45,44 +45,234 @@ function escapeHtml(text: string): string {
  */
 const LATEX_ASCII_MULT = String.raw`\,.\,`;
 
+const UNICODE_SUPERSCRIPT_TO_ASCII: Record<number, string> = {
+  0x00b9: '1',
+  0x00b2: '2',
+  0x00b3: '3',
+  0x02b0: 'h',
+  0x02b2: 'j',
+  0x02b3: 'r',
+  0x02b7: 'w',
+  0x02b8: 'y',
+  0x02e1: 'l',
+  0x02e2: 's',
+  0x02e3: 'x',
+  0x1d2c: 'A',
+  0x1d2e: 'B',
+  0x1d30: 'D',
+  0x1d31: 'E',
+  0x1d33: 'G',
+  0x1d34: 'H',
+  0x1d35: 'I',
+  0x1d36: 'J',
+  0x1d37: 'K',
+  0x1d38: 'L',
+  0x1d39: 'M',
+  0x1d3a: 'N',
+  0x1d3c: 'O',
+  0x1d3e: 'P',
+  0x1d3f: 'R',
+  0x1d40: 'T',
+  0x1d41: 'U',
+  0x1d42: 'W',
+  0x1d43: 'a',
+  0x1d47: 'b',
+  0x1d48: 'd',
+  0x1d49: 'e',
+  0x1d4d: 'g',
+  0x1d4f: 'k',
+  0x1d50: 'm',
+  0x1d52: 'o',
+  0x1d56: 'p',
+  0x1d57: 't',
+  0x1d58: 'u',
+  0x1d5b: 'v',
+  0x1d9c: 'c',
+  0x1da0: 'f',
+  0x1dbb: 'z',
+  0x2c7d: 'V',
+  0x2070: '0',
+  0x2071: 'i',
+  0x2072: 'r',
+  0x2073: 'v',
+  0x2074: '4',
+  0x2075: '5',
+  0x2076: '6',
+  0x2077: '7',
+  0x2078: '8',
+  0x2079: '9',
+  0x207a: '+',
+  0x207b: '-',
+  0x207c: '=',
+  0x207d: '(',
+  0x207e: ')',
+  0x207f: 'n',
+};
+
+const UNICODE_SUBSCRIPT_TO_ASCII: Record<number, string> = {
+  0x2080: '0',
+  0x2081: '1',
+  0x2082: '2',
+  0x2083: '3',
+  0x2084: '4',
+  0x2085: '5',
+  0x2086: '6',
+  0x2087: '7',
+  0x2088: '8',
+  0x2089: '9',
+  0x208a: '+',
+  0x208b: '-',
+  0x208c: '=',
+  0x208d: '(',
+  0x208e: ')',
+  0x2090: 'a',
+  0x2091: 'e',
+  0x2092: 'o',
+  0x2093: 'x',
+  0x2094: 'e',
+  0x2095: 'h',
+  0x2096: 'k',
+  0x2097: 'l',
+  0x2098: 'm',
+  0x2099: 'n',
+  0x209a: 'p',
+  0x209b: 's',
+  0x209c: 't',
+  0x1d62: 'i',
+  0x2c7c: 'j',
+  0x1d63: 'r',
+  0x1d64: 'u',
+  0x1d65: 'v',
+};
+
+function replaceUnicodeScriptRunsWithLatex(
+  input: string,
+  lookup: Record<number, string>,
+  marker: '^' | '_',
+): string {
+  const chars = [...input];
+  let out = '';
+  for (let i = 0; i < chars.length;) {
+    const cp = chars[i].codePointAt(0)!;
+    const mapped = lookup[cp];
+    if (mapped === undefined) {
+      out += chars[i];
+      i++;
+      continue;
+    }
+    let run = '';
+    let j = i;
+    while (j < chars.length) {
+      const nextCp = chars[j].codePointAt(0)!;
+      const next = lookup[nextCp];
+      if (next === undefined) break;
+      run += next;
+      j++;
+    }
+    out += `${marker}{${run}}`;
+    i = j;
+  }
+  return out;
+}
+
+const UNICODE_TO_LATEX_MATH: Array<[RegExp, string]> = [
+  [/\u2207/g, '\\nabla '],
+  [/\u2206/g, '\\Delta '],
+  [/\u0394/g, '\\Delta '],
+  [/\u03b4/g, '\\delta '],
+  [/\u2202/g, '\\partial '],
+  [/\u00ac/g, '\\neg '],
+  [/\u2227/g, '\\land '],
+  [/\u2228/g, '\\lor '],
+  [/\u2295/g, '\\oplus '],
+  [/\u2297/g, '\\otimes '],
+  [/\u2190/g, '\\leftarrow '],
+  [/\u2192/g, '\\to '],
+  [/\u21d2/g, '\\Rightarrow '],
+  [/\u2194/g, '\\leftrightarrow '],
+  [/\u21d4/g, '\\Leftrightarrow '],
+  [/\u21cc/g, '\\rightleftharpoons '],
+  [/\u2261/g, '\\equiv '],
+  [/\u2212/g, '-'],
+  [/\u00b1/g, '\\pm '],
+  [/\u2213/g, '\\mp '],
+  [/\u00b0/g, '^{\\circ}'],
+  [/\u221e/g, '\\infty '],
+  [/\u2264/g, '\\leq '],
+  [/\u2265/g, '\\geq '],
+  [/\u2260/g, '\\neq '],
+  [/\u2248/g, '\\approx '],
+  [/\u223c/g, '\\sim '],
+  [/\u2243/g, '\\simeq '],
+  [/\u2208/g, '\\in '],
+  [/\u2209/g, '\\notin '],
+  [/\u2205/g, '\\varnothing '],
+  [/\u2229/g, '\\cap '],
+  [/\u222a/g, '\\cup '],
+  [/\u2282/g, '\\subset '],
+  [/\u2286/g, '\\subseteq '],
+  [/\u2283/g, '\\supset '],
+  [/\u2287/g, '\\supseteq '],
+  [/\u221a/g, '\\sqrt{}'],
+  [/\u222b/g, '\\int '],
+  [/\u220f/g, '\\prod '],
+  [/\u2211/g, '\\sum '],
+  [/\u221d/g, '\\propto '],
+  [/\u2220/g, '\\angle '],
+  [/\u2225/g, '\\parallel '],
+  [/\u27c2|\u22a5/g, '\\perp '],
+  [/\u00d7/g, '\\times'],
+  [/\u00f7/g, '\\div'],
+  [/\u03c0/g, '\\pi '],
+  [/\u03b1/g, '\\alpha '],
+  [/\u03b2/g, '\\beta '],
+  [/\u03b3/g, '\\gamma '],
+  [/\u03b5/g, '\\epsilon '],
+  [/\u03f5/g, '\\varepsilon '],
+  [/\u03b6/g, '\\zeta '],
+  [/\u03b7/g, '\\eta '],
+  [/\u03b8/g, '\\theta '],
+  [/\u03d1/g, '\\vartheta '],
+  [/\u03b9/g, '\\iota '],
+  [/\u03ba/g, '\\kappa '],
+  [/\u03bb/g, '\\lambda '],
+  [/\u03bc|\u00b5/g, '\\mu '],
+  [/\u03bd/g, '\\nu '],
+  [/\u03be/g, '\\xi '],
+  [/\u03bf/g, 'o'],
+  [/\u03c1/g, '\\rho '],
+  [/\u03c3|\u03c2/g, '\\sigma '],
+  [/\u03c4/g, '\\tau '],
+  [/\u03c5/g, '\\upsilon '],
+  [/\u03c6/g, '\\phi '],
+  [/\u03d5/g, '\\varphi '],
+  [/\u03c7/g, '\\chi '],
+  [/\u03c8/g, '\\psi '],
+  [/\u03c9/g, '\\omega '],
+  [/\u0393/g, '\\Gamma '],
+  [/\u0398/g, '\\Theta '],
+  [/\u039b/g, '\\Lambda '],
+  [/\u039e/g, '\\Xi '],
+  [/\u03a0/g, '\\Pi '],
+  [/\u03a3/g, '\\Sigma '],
+  [/\u03a6/g, '\\Phi '],
+  [/\u03a8/g, '\\Psi '],
+  [/\u03a9|\u2126/g, '\\Omega '],
+  [/\u210f/g, '\\hbar '],
+];
+
 /**
  * LLMs often emit \\square / \\Box (amssymb “end of proof” / shape symbols) between factors;
  * Unicode box / middle-dot glyphs can render as tofu. Normalize to a simple math-period.
  */
 function normalizeUnicodeOperatorsInLatex(latex: string): string {
   let s = latex;
-  s = s.replace(/\u2207/g, '\\nabla ');
-  s = s.replace(/\u2206/g, '\\Delta ');
-  s = s.replace(/\u2202/g, '\\partial ');
-  s = s.replace(/\u2212/g, '-');
-  s = s.replace(/\u221E/g, '\\infty ');
-  s = s.replace(/\u2264/g, '\\leq ');
-  s = s.replace(/\u2265/g, '\\geq ');
-  s = s.replace(/\u2260/g, '\\neq ');
-  s = s.replace(/\u2208/g, '\\in ');
-  s = s.replace(/\u2209/g, '\\notin ');
-  s = s.replace(/\u222B/g, '\\int ');
-  s = s.replace(/\u2211/g, '\\sum ');
-
-  s = s.replace(/[\u2080-\u2089]/g, (ch) => `_{${ch.codePointAt(0)! - 0x2080}}`);
-  for (let cp = 0x2090; cp <= 0x209c; cp++) {
-    const letter = SUBSCRIPT_LETTER_TO_ASCII[cp];
-    if (letter) s = s.split(String.fromCodePoint(cp)).join(`_{${letter}}`);
+  for (const [re, replacement] of UNICODE_TO_LATEX_MATH) {
+    s = s.replace(re, replacement);
   }
 
-  s = s.replace(/\u00b9/g, '^{1}');
-  s = s.replace(/\u00b2/g, '^{2}');
-  s = s.replace(/\u00b3/g, '^{3}');
-  s = s.replace(/\u2070/g, '^{0}');
-  s = s.replace(/\u2071/g, '^{i}');
-  s = s.replace(/\u2074/g, '^{4}');
-  s = s.replace(/\u2075/g, '^{5}');
-  s = s.replace(/\u2076/g, '^{6}');
-  s = s.replace(/\u2077/g, '^{7}');
-  s = s.replace(/\u2078/g, '^{8}');
-  s = s.replace(/\u2079/g, '^{9}');
-  s = s.replace(/\u207a/g, '^{+}');
-  s = s.replace(/\u207b/g, '^{-}');
+  s = replaceUnicodeScriptRunsWithLatex(s, UNICODE_SUBSCRIPT_TO_ASCII, '_');
+  s = replaceUnicodeScriptRunsWithLatex(s, UNICODE_SUPERSCRIPT_TO_ASCII, '^');
 
   for (let cp = 0x1d434; cp <= 0x1d44d; cp++) {
     const ascii = String.fromCharCode(0x41 + (cp - 0x1d434));
@@ -167,23 +357,6 @@ function transformOutsideCodeFences(md: string, fn: (segment: string) => string)
 /** Private-use chars to stash TeX math spans while normalizing Unicode chemistry in plain text. */
 const MATH_STASH_BASE = 0xe000;
 
-/** Subscript Latin letters U+2090–U+209C → ASCII (e.g. ₙ → n). */
-const SUBSCRIPT_LETTER_TO_ASCII: Record<number, string> = {
-  0x2090: 'a',
-  0x2091: 'e',
-  0x2092: 'o',
-  0x2093: 'x',
-  0x2094: 'e',
-  0x2095: 'h',
-  0x2096: 'k',
-  0x2097: 'l',
-  0x2098: 'm',
-  0x2099: 'n',
-  0x209a: 'p',
-  0x209b: 's',
-  0x209c: 't',
-};
-
 /**
  * Unicode chemistry/math glyphs often have no glyph in PDF body fonts (Georgia/Times) or in Mermaid → tofu boxes.
  * Replace with ASCII letters, digits, and simple punctuation so prose, GFM tables, raw HTML tables, and diagrams stay readable.
@@ -193,64 +366,10 @@ export function normalizeUnicodeToPdfSafeAscii(input: string): string {
   for (const ch of input) {
     const c = ch.codePointAt(0)!;
 
-    if (c >= 0x2080 && c <= 0x2089) {
-      out += String(c - 0x2080);
+    const scriptMapped = UNICODE_SUBSCRIPT_TO_ASCII[c] ?? UNICODE_SUPERSCRIPT_TO_ASCII[c];
+    if (scriptMapped !== undefined) {
+      out += scriptMapped;
       continue;
-    }
-    if (c === 0x208a) {
-      out += '+';
-      continue;
-    }
-    if (c === 0x208b) {
-      out += '-';
-      continue;
-    }
-    if (c === 0x2070) {
-      out += '0';
-      continue;
-    }
-    if (c === 0x2071) {
-      out += 'i';
-      continue;
-    }
-    if (c === 0x2072) {
-      out += 'r';
-      continue;
-    }
-    if (c === 0x2073) {
-      out += 'v';
-      continue;
-    }
-    if (c >= 0x2074 && c <= 0x2079) {
-      out += String(c - 0x2074 + 4);
-      continue;
-    }
-    if (c === 0x207a) {
-      out += '+';
-      continue;
-    }
-    if (c === 0x207b) {
-      out += '-';
-      continue;
-    }
-    if (c === 0x00b9) {
-      out += '1';
-      continue;
-    }
-    if (c === 0x00b2) {
-      out += '2';
-      continue;
-    }
-    if (c === 0x00b3) {
-      out += '3';
-      continue;
-    }
-    if (c >= 0x2090 && c <= 0x209c) {
-      const mapped = SUBSCRIPT_LETTER_TO_ASCII[c];
-      if (mapped) {
-        out += mapped;
-        continue;
-      }
     }
 
     // Mathematical italic A–Z / a–z (models paste “𝑥” instead of “x”)
@@ -264,6 +383,142 @@ export function normalizeUnicodeToPdfSafeAscii(input: string): string {
     }
 
     // Common math operators missing from serif PDF fonts
+    if (c === 0x0394) {
+      out += 'Delta';
+      continue;
+    }
+    if (c === 0x03b4) {
+      out += 'delta';
+      continue;
+    }
+    if (c === 0x03b1) {
+      out += 'alpha';
+      continue;
+    }
+    if (c === 0x03b2) {
+      out += 'beta';
+      continue;
+    }
+    if (c === 0x03b3) {
+      out += 'gamma';
+      continue;
+    }
+    if (c === 0x03bb) {
+      out += 'lambda';
+      continue;
+    }
+    if (c === 0x03bc || c === 0x00b5) {
+      out += 'mu';
+      continue;
+    }
+    if (c === 0x03c0) {
+      out += 'pi';
+      continue;
+    }
+    if (c === 0x03b5 || c === 0x03f5) {
+      out += 'epsilon';
+      continue;
+    }
+    if (c === 0x03b6) {
+      out += 'zeta';
+      continue;
+    }
+    if (c === 0x03b7) {
+      out += 'eta';
+      continue;
+    }
+    if (c === 0x03b8 || c === 0x03d1) {
+      out += 'theta';
+      continue;
+    }
+    if (c === 0x03b9) {
+      out += 'iota';
+      continue;
+    }
+    if (c === 0x03ba) {
+      out += 'kappa';
+      continue;
+    }
+    if (c === 0x03bd) {
+      out += 'nu';
+      continue;
+    }
+    if (c === 0x03be) {
+      out += 'xi';
+      continue;
+    }
+    if (c === 0x03c1) {
+      out += 'rho';
+      continue;
+    }
+    if (c === 0x03c3 || c === 0x03c2) {
+      out += 'sigma';
+      continue;
+    }
+    if (c === 0x03c4) {
+      out += 'tau';
+      continue;
+    }
+    if (c === 0x03c5) {
+      out += 'upsilon';
+      continue;
+    }
+    if (c === 0x03c6 || c === 0x03d5) {
+      out += 'phi';
+      continue;
+    }
+    if (c === 0x03c7) {
+      out += 'chi';
+      continue;
+    }
+    if (c === 0x03c8) {
+      out += 'psi';
+      continue;
+    }
+    if (c === 0x03c9) {
+      out += 'omega';
+      continue;
+    }
+    if (c === 0x0393) {
+      out += 'Gamma';
+      continue;
+    }
+    if (c === 0x0398) {
+      out += 'Theta';
+      continue;
+    }
+    if (c === 0x039b) {
+      out += 'Lambda';
+      continue;
+    }
+    if (c === 0x039e) {
+      out += 'Xi';
+      continue;
+    }
+    if (c === 0x03a0) {
+      out += 'Pi';
+      continue;
+    }
+    if (c === 0x03a3) {
+      out += 'Sigma';
+      continue;
+    }
+    if (c === 0x03a6) {
+      out += 'Phi';
+      continue;
+    }
+    if (c === 0x03a8) {
+      out += 'Psi';
+      continue;
+    }
+    if (c === 0x03a9 || c === 0x2126) {
+      out += 'Ohm';
+      continue;
+    }
+    if (c === 0x210f) {
+      out += 'hbar';
+      continue;
+    }
     if (c === 0x2207) {
       out += 'nabla';
       continue;
@@ -272,8 +527,20 @@ export function normalizeUnicodeToPdfSafeAscii(input: string): string {
       out += 'Delta';
       continue;
     }
+    if (c === 0x2202) {
+      out += 'partial';
+      continue;
+    }
     if (c === 0x2212) {
       out += '-';
+      continue;
+    }
+    if (c === 0x00b1) {
+      out += '+/-';
+      continue;
+    }
+    if (c === 0x2213) {
+      out += '-/+';
       continue;
     }
     if (c === 0x00d7) {
@@ -286,6 +553,58 @@ export function normalizeUnicodeToPdfSafeAscii(input: string): string {
     }
     if (c === 0x2248) {
       out += '~';
+      continue;
+    }
+    if (c === 0x223c || c === 0x2243) {
+      out += '~';
+      continue;
+    }
+    if (c === 0x221d) {
+      out += ' proportional to ';
+      continue;
+    }
+    if (c === 0x2220) {
+      out += ' angle ';
+      continue;
+    }
+    if (c === 0x2225) {
+      out += ' parallel ';
+      continue;
+    }
+    if (c === 0x27c2 || c === 0x22a5) {
+      out += ' perpendicular ';
+      continue;
+    }
+    if (c === 0x00ac) {
+      out += 'not ';
+      continue;
+    }
+    if (c === 0x2227) {
+      out += ' and ';
+      continue;
+    }
+    if (c === 0x2228) {
+      out += ' or ';
+      continue;
+    }
+    if (c === 0x21d2 || c === 0x2192) {
+      out += '=>';
+      continue;
+    }
+    if (c === 0x2190) {
+      out += '<-';
+      continue;
+    }
+    if (c === 0x21d4 || c === 0x2194) {
+      out += '<=>';
+      continue;
+    }
+    if (c === 0x21cc) {
+      out += '<=>';
+      continue;
+    }
+    if (c === 0x2261) {
+      out += '==';
       continue;
     }
     if (c === 0x2260) {
@@ -306,6 +625,50 @@ export function normalizeUnicodeToPdfSafeAscii(input: string): string {
     }
     if (c === 0x22c5 || c === 0x00b7 || c === 0x2219 || c === 0x2022) {
       out += '*';
+      continue;
+    }
+    if (c === 0x2205) {
+      out += 'empty set';
+      continue;
+    }
+    if (c === 0x2229) {
+      out += ' intersect ';
+      continue;
+    }
+    if (c === 0x222a) {
+      out += ' union ';
+      continue;
+    }
+    if (c === 0x2282) {
+      out += ' subset of ';
+      continue;
+    }
+    if (c === 0x2286) {
+      out += ' subseteq ';
+      continue;
+    }
+    if (c === 0x2283) {
+      out += ' superset of ';
+      continue;
+    }
+    if (c === 0x2287) {
+      out += ' superseteq ';
+      continue;
+    }
+    if (c === 0x221a) {
+      out += 'sqrt';
+      continue;
+    }
+    if (c === 0x220f) {
+      out += 'prod';
+      continue;
+    }
+    if (c >= 0x25a0 && c <= 0x25a3) {
+      out += '.';
+      continue;
+    }
+    if (c === 0x00b0) {
+      out += ' degrees';
       continue;
     }
 

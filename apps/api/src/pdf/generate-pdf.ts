@@ -167,6 +167,10 @@ export async function exportPDF(session: SessionState): Promise<void> {
                 theme: 'default',
                 securityLevel: 'loose',
                 flowchart: { useMaxWidth: true, htmlLabels: true },
+                sequence: { useMaxWidth: true },
+                themeVariables: {
+                  fontFamily: '"Times New Roman","Cambria Math","Segoe UI Symbol","Arial Unicode MS",sans-serif',
+                },
               });
               return (window as any).mermaid.run({ querySelector: 'pre.mermaid' });
             });

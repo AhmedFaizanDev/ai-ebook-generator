@@ -13,10 +13,15 @@ html, body {
   padding: 0;
 }
 body {
-  font-family: 'Georgia', 'Times New Roman', serif;
+  font-family: 'Georgia', 'Times New Roman', 'Cambria Math', 'Segoe UI Symbol', 'Segoe UI Emoji', 'Arial Unicode MS', serif;
   font-size: 11pt;
   line-height: 1.65;
   color: #1a1a1a;
+}
+svg text,
+.mermaid text,
+.diagram-canvas text {
+  font-family: 'Times New Roman', 'Cambria Math', 'Segoe UI Symbol', 'Segoe UI Emoji', 'Arial Unicode MS', sans-serif !important;
 }
 h1 {
   page-break-before: always;

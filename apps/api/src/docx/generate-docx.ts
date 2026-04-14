@@ -146,7 +146,16 @@ async function rasterizeVisualsForDocx(html: string, mermaidEnabled: boolean): P
         try {
           await page.addScriptTag({ url: 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js' });
           await page.evaluate(() => {
-            (window as any).mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose' });
+            (window as any).mermaid.initialize({
+              startOnLoad: false,
+              theme: 'default',
+              securityLevel: 'loose',
+              flowchart: { useMaxWidth: true, htmlLabels: true },
+              sequence: { useMaxWidth: true },
+              themeVariables: {
+                fontFamily: '"Times New Roman","Cambria Math","Segoe UI Symbol","Arial Unicode MS",sans-serif',
+              },
+            });
             return (window as any).mermaid.run({ querySelector: 'pre.mermaid' });
           });
           await new Promise((r) => setTimeout(r, 1000));
