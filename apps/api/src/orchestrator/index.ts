@@ -16,7 +16,13 @@ import { generateCaseStudies } from './generate-case-study';
 import { generateGlossary } from './generate-glossary';
 import { generateBibliography } from './generate-bibliography';
 import { buildFinalMarkdown } from './build-markdown';
+import { exportPDF } from '@/pdf/generate-pdf';
 import { logPhase, logVerbose } from './debug';
+
+/** CSV/CLI batch: run PDF inside orchestrate so the session never stops at `markdown_ready` (no /api/approve). */
+export interface OrchestrateOptions {
+  autoExportPdfForBatch?: boolean;
+}
 
 function touch(session: SessionState): void {
   session.lastActivityAt = Date.now();
@@ -87,7 +93,7 @@ function isPostUnitsComplete(session: SessionState): boolean {
   );
 }
 
-export async function orchestrate(session: SessionState): Promise<void> {
+export async function orchestrate(session: SessionState, options?: OrchestrateOptions): Promise<void> {
   session.status = 'generating';
   touch(session);
   logPhase(session.id, 'orchestrate started', { topic: session.topic });
@@ -339,10 +345,23 @@ export async function orchestrate(session: SessionState): Promise<void> {
     touch(session);
     session.progress = 98;
 
-    session.status = 'markdown_ready';
-    session.phase = 'markdown_ready';
-    logPhase(session.id, 'markdown ready — waiting for user approval before PDF');
-    saveSession(session);
+    if (options?.autoExportPdfForBatch) {
+      logPhase(session.id, 'batch: markdown complete — exporting PDF (no approval step)');
+      session.status = 'exporting_pdf';
+      session.phase = 'pdf';
+      saveSession(session);
+      await exportPDF(session);
+      session.progress = 100;
+      session.status = 'completed';
+      session.phase = 'completed';
+      logPhase(session.id, 'batch: PDF export finished');
+      saveSession(session);
+    } else {
+      session.status = 'markdown_ready';
+      session.phase = 'markdown_ready';
+      logPhase(session.id, 'markdown ready — waiting for user approval before PDF');
+      saveSession(session);
+    }
   } catch (error: unknown) {
     touch(session);
     logPhase(session.id, 'orchestrate failed', { error: error instanceof Error ? error.message : String(error) });

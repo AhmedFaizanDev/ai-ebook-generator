@@ -63,13 +63,23 @@ export async function exportPDF(session: SessionState): Promise<void> {
     throw new Error('No finalMarkdown to render');
   }
 
+  const topicLabel = (session.topic || 'book').slice(0, 80);
+  const wall0 = Date.now();
+  console.log(`[PDF] Starting export for "${topicLabel}"…`);
+  console.log('[PDF] Stage 1/3: markdown → HTML (segments + KaTeX can take several minutes on large books; no log spam until done)…');
+
   const visuals = session.visuals;
   // Prefer structured segments (each md segment parsed independently by marked)
   // over flat finalMarkdown to prevent CommonMark HTML-block poisoning.
   const segments = buildSegments(session);
+  console.log(`[PDF] Stage 1a: ${segments.length} segment(s) assembled (${Math.round((Date.now() - wall0) / 1000)}s)`);
+
   const fullHtml = segments.length > 0
     ? segmentsToHtml(segments, visuals)
     : markdownToHtml(session.finalMarkdown, visuals);
+  console.log(
+    `[PDF] Stage 1b: HTML ${Math.round(fullHtml.length / 1024)}KB (${Math.round((Date.now() - wall0) / 1000)}s) — starting preflight / chunking`,
+  );
   const highlightCss = getHighlightCss();
 
   if (!fullHtml || fullHtml.trim().length === 0) {
@@ -117,7 +127,7 @@ export async function exportPDF(session: SessionState): Promise<void> {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const MAX_ATTEMPTS = 3;
 
-  console.log(`[PDF] Rendering ${htmlChunks.length} chunks...`);
+  console.log(`[PDF] Stage 2/3: Chromium — ${htmlChunks.length} PDF chunk(s) (first browser launch on Windows often 30–90s)…`);
 
   for (let i = 0; i < htmlChunks.length; i++) {
     const wrappedHtml = wrapInHtmlTemplate(htmlChunks[i], highlightCss, { mathEnabled: visuals?.equations?.enabled });
@@ -235,7 +245,7 @@ export async function exportPDF(session: SessionState): Promise<void> {
     if (lastErr) throw lastErr;
     if (i < htmlChunks.length - 1) await sleep(600);
   }
-  console.log(`[PDF] All chunks rendered, merging ${pdfBuffers.length} PDFs...`);
+  console.log(`[PDF] Stage 3/3: merging ${pdfBuffers.length} chunk PDF(s) (${Math.round((Date.now() - wall0) / 1000)}s total so far)…`);
 
   if (pdfBuffers.length === 0) {
     throw new Error('No PDF chunks were rendered successfully');
@@ -278,5 +288,7 @@ export async function exportPDF(session: SessionState): Promise<void> {
 
   session.finalMarkdown = null;
 
-  console.log(`[PDF] Export complete — ${pages.length} pages, ${Math.round(session.pdfBuffer.length / 1024)}KB`);
+  console.log(
+    `[PDF] Export complete — ${pages.length} pages, ${Math.round(session.pdfBuffer.length / 1024)}KB (${Math.round((Date.now() - wall0) / 1000)}s wall time)`,
+  );
 }

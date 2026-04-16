@@ -267,6 +267,10 @@ const UNICODE_TO_LATEX_MATH: Array<[RegExp, string]> = [
  */
 function normalizeUnicodeOperatorsInLatex(latex: string): string {
   let s = latex;
+  // NBSP / thin / hair / figure spaces etc.: KaTeX logs "No character metrics for … Main-Regular"
+  // when these appear inside math (models often paste U+2009 instead of \, or thin space).
+  s = s.replace(/[\u200B-\u200D\uFEFF\u2060]/g, '');
+  s = s.replace(/[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g, ' ');
   for (const [re, replacement] of UNICODE_TO_LATEX_MATH) {
     s = s.replace(re, replacement);
   }

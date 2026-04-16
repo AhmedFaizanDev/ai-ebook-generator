@@ -1,2 +1,5 @@
 title,domain,author,isbn,technical,equations,mermaid
-"Probabilistic Graphical Models",Machine Learning,"Faizan",,true,true,true
+Fundamental Operations,Business,Usha Hall,9780576627023,False,False,True
+Modern Web Technologies,Computers & Technology,Robert Lewis,9784235733223,True,True,True
+Key Concepts in Web Technologies,Computers & Technology,Carl Garcia,9787383473591,True,True,True
+JavaScript ES6+ Advanced Features,Web Development,Kavitha Scott,9784638655771,True,False,True

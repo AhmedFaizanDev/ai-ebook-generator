@@ -79,6 +79,11 @@ describe('normalizeLatexForKatex', () => {
     expect(normalizeLatexForKatex('D\u2082O')).toContain('_{2}');
   });
 
+  it('strips Unicode thin spaces so KaTeX does not warn about missing metrics', () => {
+    expect(normalizeLatexForKatex('a\u2009b')).toBe('a b');
+    expect(normalizeLatexForKatex('x\u200B+y')).toBe('x+y');
+  });
+
   it('maps logical Unicode symbols to TeX operators', () => {
     const normalized = normalizeLatexForKatex('\u00ac(p \u2228 q) \u21D4 (\u00acp \u2227 \u00acq)');
     expect(normalized).toContain('\\neg');

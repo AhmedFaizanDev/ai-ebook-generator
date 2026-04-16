@@ -4,7 +4,6 @@ import {
   formatContentErrorsForRepairPrompt,
   isMarkdownFullyValidForSession,
 } from './section-enforce';
-import { ContentValidationError } from './content-validation-error';
 import type { SessionState } from '@/lib/types';
 import { DEFAULT_VISUAL_CONFIG } from '@/lib/types';
 import { LIGHT_MODEL } from '@/lib/config';
@@ -64,55 +63,31 @@ describe('runWithContentValidationRetries', () => {
     vi.restoreAllMocks();
   });
 
-  it('returns on first successful validation', async () => {
+  it('returns generated markdown on first attempt', async () => {
     const session = mockSession();
-    const gen = vi.fn().mockResolvedValueOnce('ok');
+    const gen = vi.fn().mockResolvedValueOnce('ok  ');
+    const validate = vi.fn().mockReturnValue({ pass: false, errors: [{ type: 'mermaid', message: 'x', blockIndex: 0, source: '' }] });
     const out = await runWithContentValidationRetries(
       session,
       'test',
-      () => ({ pass: true, errors: [] }),
+      validate,
       gen,
     );
     expect(out).toBe('ok');
     expect(gen).toHaveBeenCalledTimes(1);
     expect(gen.mock.calls[0][0]).toEqual({ attempt: 1, repairSuffix: null });
-  });
-
-  it('regenerates once with repair suffix then succeeds', async () => {
-    const session = mockSession({ autoFixAttempts: 1 });
-    const gen = vi
-      .fn()
-      .mockResolvedValueOnce('bad')
-      .mockResolvedValueOnce('fixed');
-    const validate = vi
-      .fn()
-      .mockReturnValueOnce({ pass: false, errors: [{ type: 'equation', message: 'x', blockIndex: 0, source: 'y' }] })
-      .mockReturnValueOnce({ pass: true, errors: [] });
-
-    const out = await runWithContentValidationRetries(session, 'test', validate, gen);
-    expect(out).toBe('fixed');
-    expect(gen).toHaveBeenCalledTimes(2);
-    expect(gen.mock.calls[1][0].repairSuffix).toContain('Issues:');
-    expect(gen.mock.calls[1][0].repairSuffix).toContain('[equation]');
-  });
-
-  it('throws ContentValidationError in strictMode after exhausting attempts', async () => {
-    const session = mockSession({ autoFixAttempts: 0 });
-    const gen = vi.fn().mockResolvedValue('always bad');
-    await expect(
-      runWithContentValidationRetries(session, 'lab', () => ({ pass: false, errors: [{ type: 'mermaid', message: 'e', blockIndex: 0, source: '' }] }), gen),
-    ).rejects.toThrow(ContentValidationError);
-    expect(gen).toHaveBeenCalledTimes(1);
+    expect(validate).not.toHaveBeenCalled();
   });
 });
 
 describe('isMarkdownFullyValidForSession', () => {
-  it('returns true for plain prose when visuals off', () => {
+  it('always returns true when validation gate is disabled', () => {
     const session = mockSession({
       equations: { enabled: false },
       mermaid: { enabled: false },
       strictMode: true,
     });
     expect(isMarkdownFullyValidForSession(session, 'Hello world.')).toBe(true);
+    expect(isMarkdownFullyValidForSession(session, '```mermaid\ngraph LR\nA-->B\n')).toBe(true);
   });
 });

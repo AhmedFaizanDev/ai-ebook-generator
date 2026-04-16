@@ -8,6 +8,7 @@
  *
  * Features:
  *   - Idempotent job tracking: completed list = skip; existing session file = resume from checkpoint
+ *   - PDF runs automatically after markdown (no /api/approve); orchestrate(..., { autoExportPdfForBatch: true })
  *   - Stable session id per title so the same book always resumes to the same checkpoint
  *   - Automatic retry rounds: failed books are retried in the same run (up to BATCH_MAX_RETRY_ROUNDS, default 5)
  *   - Cooldown between books and between retry rounds to avoid rate limits
@@ -421,7 +422,7 @@ async function processBook(
   }
 
   try {
-    await orchestrate(session);
+    await orchestrate(session, { autoExportPdfForBatch: true });
 
     if (session.status === 'failed') {
       throw new Error(session.error || 'Orchestration failed');
@@ -433,7 +434,10 @@ async function processBook(
 
     const safeName = sanitizeFileName(title);
 
-    await exportPDF(session);
+    // PDF is produced inside orchestrate when autoExportPdfForBatch is true (no markdown_ready / approve gate).
+    if (!session.pdfBuffer) {
+      await exportPDF(session);
+    }
     if (!session.pdfBuffer) {
       throw new Error('PDF export produced no buffer');
     }
