@@ -19,10 +19,10 @@ export async function generatePreface(session: SessionState): Promise<string> {
       return { pass: r.pass, errors: r.errors };
     },
     async ({ repairSuffix }) => {
-      const userPrompt = buildPrefacePrompt(session.topic, unitTitles) + (repairSuffix ?? '');
+      const userPrompt = buildPrefacePrompt(session.topic, unitTitles, session.outputLanguage) + (repairSuffix ?? '');
       const result = await callLLM({
         model: LIGHT_MODEL,
-        systemPrompt: buildSystemPrompt(session.isTechnical),
+        systemPrompt: buildSystemPrompt(session.isTechnical, session.visuals, session.outputLanguage),
         userPrompt,
         maxTokens: 900,
         temperature: 0.3,

@@ -215,11 +215,11 @@ export default function registerEditSection(router: Router): void {
     session.subtopicVersions.set(key, versions);
 
     try {
-      const userPrompt = buildEditSectionPrompt(currentMd, mdSpan, action as EditAction);
+      const userPrompt = buildEditSectionPrompt(currentMd, mdSpan, action as EditAction, session.outputLanguage);
 
       const result = await callLLM({
         model: LIGHT_MODEL,
-        systemPrompt: buildSystemPrompt(session.isTechnical),
+        systemPrompt: buildSystemPrompt(session.isTechnical, session.visuals, session.outputLanguage),
         userPrompt,
         maxTokens: 2200,
         temperature: 0.4,

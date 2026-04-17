@@ -15,6 +15,7 @@ function mockSession(overrides: Partial<SessionState['visuals']> = {}): SessionS
     topic: 'Topic',
     isTechnical: true,
     visuals: { ...DEFAULT_VISUAL_CONFIG, strictMode: true, autoFixAttempts: 1, ...overrides },
+    outputLanguage: 'en',
     model: LIGHT_MODEL,
     phase: 'test',
     progress: 0,

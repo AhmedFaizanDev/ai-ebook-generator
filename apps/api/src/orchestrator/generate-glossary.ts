@@ -20,10 +20,11 @@ export async function generateGlossary(session: SessionState): Promise<string> {
     },
     async ({ repairSuffix }) => {
       const userPrompt =
-        buildGlossaryPrompt(session.topic, unitTitles, session.isTechnical) + (repairSuffix ?? '');
+        buildGlossaryPrompt(session.topic, unitTitles, session.isTechnical, session.outputLanguage) +
+        (repairSuffix ?? '');
       const result = await callLLM({
         model: LIGHT_MODEL,
-        systemPrompt: buildSystemPrompt(session.isTechnical),
+        systemPrompt: buildSystemPrompt(session.isTechnical, session.visuals, session.outputLanguage),
         userPrompt,
         maxTokens: 800,
         temperature: 0.2,

@@ -10,12 +10,19 @@ import {
   isMarkdownFullyValidForSession,
   runWithContentValidationRetries,
 } from './section-enforce';
+import {
+  capstoneBatchedSplitSource,
+  capstoneH2Line,
+  markdownCapstoneH1,
+  type OutputLanguage,
+} from '@/lib/output-language';
 
-function splitBatchedOutput(raw: string, expectedCount: number): string[] | null {
+function splitBatchedOutput(raw: string, expectedCount: number, lang: OutputLanguage): string[] | null {
   const parts = raw.split(/\n---\n/).map((p) => p.trim()).filter((p) => p.length > 0);
   if (parts.length === expectedCount) return parts;
 
-  const byHeading = raw.split(/(?=^## Capstone Project \d)/m).map((p) => p.trim()).filter((p) => p.length > 0);
+  const re = new RegExp(`(?=${capstoneBatchedSplitSource(lang)})`, 'mu');
+  const byHeading = raw.split(re).map((p) => p.trim()).filter((p) => p.length > 0);
   if (byHeading.length === expectedCount) return byHeading;
 
   return null;
@@ -23,6 +30,8 @@ function splitBatchedOutput(raw: string, expectedCount: number): string[] | null
 
 export async function generateCapstones(session: SessionState): Promise<string> {
   const structure = session.structure!;
+  const lang = session.outputLanguage;
+  const h1 = markdownCapstoneH1(lang);
 
   if (CAPSTONE_COUNT >= 2) {
     const batchPrompt = buildBatchedCapstonePrompt(
@@ -30,11 +39,12 @@ export async function generateCapstones(session: SessionState): Promise<string> 
       structure.capstoneTopics,
       session.unitSummaries,
       session.isTechnical,
+      lang,
     );
 
     const batchResult = await callLLM({
       model: session.model,
-      systemPrompt: buildSystemPrompt(session.isTechnical),
+      systemPrompt: buildSystemPrompt(session.isTechnical, session.visuals, lang),
       userPrompt: batchPrompt,
       maxTokens: 5000,
       temperature: 0.35,
@@ -46,15 +56,15 @@ export async function generateCapstones(session: SessionState): Promise<string> 
 
     incrementCounters(session, batchResult.totalTokens);
 
-    const parts = splitBatchedOutput(batchResult.content.trim(), CAPSTONE_COUNT);
+    const parts = splitBatchedOutput(batchResult.content.trim(), CAPSTONE_COUNT, lang);
     if (parts) {
       const fixed = parts.map((md, i) => {
         if (!md.startsWith('## ')) {
-          return `## Capstone Project ${i + 1}: ${structure.capstoneTopics[i]}\n\n${md}`;
+          return `${capstoneH2Line(i, structure.capstoneTopics[i], lang)}\n\n${md}`;
         }
         return md;
       });
-      const out = '# Capstone Projects\n\n' + fixed.join('\n\n---\n\n');
+      const out = `${h1}\n\n` + fixed.join('\n\n---\n\n');
       if (isMarkdownFullyValidForSession(session, out)) {
         enforceContentAggregateAndH2Sections(session, out, 'capstones');
         return out;
@@ -82,10 +92,11 @@ export async function generateCapstones(session: SessionState): Promise<string> 
             structure.capstoneTopics[i],
             session.unitSummaries,
             session.isTechnical,
+            lang,
           ) + (repairSuffix ?? '');
         const result = await callLLM({
           model: session.model,
-          systemPrompt: buildSystemPrompt(session.isTechnical),
+          systemPrompt: buildSystemPrompt(session.isTechnical, session.visuals, lang),
           userPrompt,
           maxTokens: 2600,
           temperature: 0.35,
@@ -97,7 +108,7 @@ export async function generateCapstones(session: SessionState): Promise<string> 
         incrementCounters(session, result.totalTokens);
         let chunk = result.content.trim();
         if (!chunk.startsWith('## ')) {
-          chunk = `## Capstone Project ${i + 1}: ${structure.capstoneTopics[i]}\n\n${chunk}`;
+          chunk = `${capstoneH2Line(i, structure.capstoneTopics[i], lang)}\n\n${chunk}`;
         }
         return chunk;
       },
@@ -105,7 +116,7 @@ export async function generateCapstones(session: SessionState): Promise<string> 
     parts.push(md);
   }
 
-  const out = '# Capstone Projects\n\n' + parts.join('\n\n---\n\n');
+  const out = `${h1}\n\n` + parts.join('\n\n---\n\n');
   enforceContentAggregateAndH2Sections(session, out, 'capstones');
   return out;
 }

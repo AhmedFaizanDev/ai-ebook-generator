@@ -6,8 +6,74 @@ import { wrapInHtmlTemplate } from './html-template';
 import { getBrowser, closeBrowser } from './browser-pool';
 import { auditExportHtml } from './export-preflight';
 import { buildExportQualityReport } from '@/orchestrator/content-validator';
+import { describeThrowable } from '@/lib/describe-throwable';
 
 const MAX_CHUNK_CHARS = 350_000;
+
+/**
+ * In-browser scripts passed as strings so tsx/esbuild never inject `__name` into serialized
+ * `page.evaluate(fn)` bodies (would cause ReferenceError in Chromium).
+ */
+const MERMAID_RUN_SCRIPT = `
+(async () => {
+  function stringifyInPage(e) {
+    if (e instanceof Error) return e.message || e.name || 'Error';
+    if (typeof e === 'string') return e;
+    try {
+      var j = JSON.stringify(e);
+      if (j && j !== '{}') return j.slice(0, 800);
+    } catch (x) {}
+    return String(e);
+  }
+  try {
+    var w = window;
+    if (!w.mermaid) {
+      return { ok: false, reason: 'mermaid global missing after loading script (network blocked?)' };
+    }
+    w.mermaid.initialize({
+      startOnLoad: false,
+      theme: 'default',
+      securityLevel: 'loose',
+      flowchart: { useMaxWidth: true, htmlLabels: true },
+      sequence: { useMaxWidth: true },
+      themeVariables: {
+        fontFamily: '"Times New Roman","Cambria Math","Segoe UI Symbol","Arial Unicode MS",sans-serif',
+      },
+    });
+    await w.mermaid.run({ querySelector: 'pre.mermaid' });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: stringifyInPage(e) };
+  }
+})()
+`;
+
+const MERMAID_VERIFY_SCRIPT = `
+(() => {
+  var containers = document.querySelectorAll('.mermaid-container');
+  var failed = 0;
+  var failedTexts = [];
+  for (var i = 0; i < containers.length; i++) {
+    var c = containers[i];
+    var svg = c.querySelector('svg');
+    var hasSyntaxError = (c.textContent || '').toLowerCase().indexOf('syntax error') !== -1;
+    if (!svg || hasSyntaxError) {
+      failed++;
+      failedTexts.push((c.textContent || '').slice(0, 120));
+      c.style.display = 'none';
+    } else {
+      svg.setAttribute('style', 'max-width:100%;max-height:500px;height:auto;');
+      if (!svg.getAttribute('viewBox') && svg.getBBox) {
+        try {
+          var bb = svg.getBBox();
+          svg.setAttribute('viewBox', '0 0 ' + bb.width + ' ' + bb.height);
+        } catch (e) {}
+      }
+    }
+  }
+  return { total: containers.length, failed: failed, failedTexts: failedTexts };
+})()
+`;
 
 function splitHtmlByH1(html: string): string[] {
   const copyrightEndMarker = '</div>\n';
@@ -163,59 +229,48 @@ export async function exportPDF(session: SessionState): Promise<void> {
         await page.setContent(wrappedHtml, { waitUntil: 'load', timeout: 120_000 });
 
         if (visuals?.equations?.enabled) {
-          await page.evaluate(() => (document.fonts?.ready ? document.fonts.ready : Promise.resolve())).catch(() => {});
+          await page
+            .evaluate(
+              '(function(){ var r = document.fonts && document.fonts.ready; return r ? r : Promise.resolve(); })()',
+            )
+            .catch(() => {});
         }
 
         // Render Mermaid diagrams if any <pre class="mermaid"> exist
         if (visuals?.mermaid?.enabled) {
-          const hasMermaid = await page.evaluate(() => document.querySelectorAll('pre.mermaid').length > 0);
+          const hasMermaid = await page.evaluate("document.querySelectorAll('pre.mermaid').length > 0");
           if (hasMermaid) {
             await page.addScriptTag({ url: 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js' });
-            await page.evaluate(() => {
-              (window as any).mermaid.initialize({
-                startOnLoad: false,
-                theme: 'default',
-                securityLevel: 'loose',
-                flowchart: { useMaxWidth: true, htmlLabels: true },
-                sequence: { useMaxWidth: true },
-                themeVariables: {
-                  fontFamily: '"Times New Roman","Cambria Math","Segoe UI Symbol","Arial Unicode MS",sans-serif',
-                },
-              });
-              return (window as any).mermaid.run({ querySelector: 'pre.mermaid' });
-            });
-            await new Promise((r) => setTimeout(r, 1000));
-
-            // Verify each mermaid container rendered to SVG
-            const mermaidResults: { total: number; failed: number; failedTexts: string[] } = await page.evaluate(() => {
-              const containers = document.querySelectorAll('.mermaid-container');
-              let failed = 0;
-              const failedTexts: string[] = [];
-              containers.forEach((c) => {
-                const svg = c.querySelector('svg');
-                const hasSyntaxError = c.textContent?.toLowerCase().includes('syntax error') ?? false;
-                if (!svg || hasSyntaxError) {
-                  failed++;
-                  failedTexts.push((c.textContent ?? '').slice(0, 120));
-                  (c as HTMLElement).style.display = 'none';
-                } else {
-                  svg.setAttribute('style', 'max-width:100%;max-height:500px;height:auto;');
-                  if (!svg.getAttribute('viewBox') && svg.getBBox) {
-                    try {
-                      const bb = svg.getBBox();
-                      svg.setAttribute('viewBox', `0 0 ${bb.width} ${bb.height}`);
-                    } catch { /* ignore */ }
-                  }
-                }
-              });
-              return { total: containers.length, failed, failedTexts };
-            });
-
-            if (mermaidResults.failed > 0) {
-              console.warn(`[PDF] ${mermaidResults.failed}/${mermaidResults.total} mermaid diagram(s) failed to render in chunk ${i + 1}`);
+            // Mermaid often throws non-Error values; raw CDP errors show as "Object". Catch in-page and return text.
+            const runOutcome = (await page.evaluate(MERMAID_RUN_SCRIPT)) as { ok: true } | { ok: false; reason: string };
+            if (!runOutcome.ok) {
+              const detail = `Mermaid run failed in PDF chunk ${i + 1}: ${runOutcome.reason}`;
               if (visuals.strictMode) {
-                const detail = mermaidResults.failedTexts.join(' | ');
-                throw new Error(`Mermaid render failed for ${mermaidResults.failed} diagram(s): ${detail}`);
+                throw new Error(detail);
+              }
+              console.warn(`[PDF] ${detail.slice(0, 1200)}${detail.length > 1200 ? '…' : ''}`);
+              console.warn(
+                '[PDF] strictMode=false: continuing PDF without diagrams for this chunk (invalid Mermaid, e.g. empty node labels like A[""]).',
+              );
+              await page.evaluate(
+                "document.querySelectorAll('pre.mermaid').forEach(function (p) { p.style.display = 'none'; })",
+              );
+            } else {
+              await new Promise((r) => setTimeout(r, 1000));
+
+              // Verify each mermaid container rendered to SVG
+              const mermaidResults = (await page.evaluate(MERMAID_VERIFY_SCRIPT)) as {
+                total: number;
+                failed: number;
+                failedTexts: string[];
+              };
+
+              if (mermaidResults.failed > 0) {
+                console.warn(`[PDF] ${mermaidResults.failed}/${mermaidResults.total} mermaid diagram(s) failed to render in chunk ${i + 1}`);
+                if (visuals.strictMode) {
+                  const failedDetail = mermaidResults.failedTexts.join(' | ');
+                  throw new Error(`Mermaid render failed for ${mermaidResults.failed} diagram(s): ${failedDetail}`);
+                }
               }
             }
           }
@@ -229,9 +284,9 @@ export async function exportPDF(session: SessionState): Promise<void> {
         console.log(`[PDF] Chunk ${i + 1}/${htmlChunks.length} done (${Math.round(pdfUint8.length / 1024)}KB PDF)`);
         break;
       } catch (err) {
-        lastErr = err instanceof Error ? err : new Error(String(err));
+        const msg = describeThrowable(err);
+        lastErr = new Error(msg, err instanceof Error ? { cause: err } : undefined);
         await page.close().catch(() => {});
-        const msg = lastErr.message;
         console.error(`[PDF] Chunk ${i + 1} attempt ${attempt + 1} failed: ${msg}`);
         if (attempt < MAX_ATTEMPTS - 1 && isRetriablePuppeteerError(msg)) {
           console.log('[PDF] Retriable (Target/Protocol closed) — closing browser, launching fresh one...');

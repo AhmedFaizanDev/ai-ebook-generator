@@ -1,4 +1,6 @@
 import { SessionState, type VisualConfig } from '@/lib/types';
+import type { OutputLanguage } from '@/lib/output-language';
+import { BIBLIOGRAPHY_HEADINGS } from '@/lib/output-language';
 import { validateContentBlocks } from './content-validator';
 import { LIGHT_MODEL } from '@/lib/config';
 import { callLLM } from '@/lib/openai-client';
@@ -87,8 +89,61 @@ function isGibberishEntry(line: string): boolean {
   return false;
 }
 
+function mdHasHeadingLine(md: string, heading: string): boolean {
+  const lines = md.split('\n');
+  for (const raw of lines) {
+    const t = raw.trim();
+    if (t === heading || t.startsWith(`${heading} `) || t.startsWith(`${heading}\t`)) return true;
+  }
+  return false;
+}
+
+function validateBibliographyHeadings(cleaned: string, outputLanguage: OutputLanguage, reasons: string[]): void {
+  const h = BIBLIOGRAPHY_HEADINGS[outputLanguage];
+  const en = BIBLIOGRAPHY_HEADINGS.en;
+
+  const mainOk =
+    outputLanguage === 'en'
+      ? mdHasHeadingLine(cleaned, `# ${en.main}`)
+      : mdHasHeadingLine(cleaned, `# ${h.main}`) || mdHasHeadingLine(cleaned, `# ${en.main}`);
+  if (!mainOk) {
+    reasons.push(
+      outputLanguage === 'en'
+        ? `missing main heading "# ${en.main}"`
+        : `missing main heading "# ${h.main}" (or English "# ${en.main}" as fallback)`,
+    );
+  }
+
+  const booksOk =
+    outputLanguage === 'en'
+      ? mdHasHeadingLine(cleaned, en.books)
+      : mdHasHeadingLine(cleaned, h.books) || mdHasHeadingLine(cleaned, en.books);
+  const papersOk =
+    outputLanguage === 'en'
+      ? mdHasHeadingLine(cleaned, en.papers)
+      : mdHasHeadingLine(cleaned, h.papers) || mdHasHeadingLine(cleaned, en.papers);
+  const onlineOk =
+    outputLanguage === 'en'
+      ? mdHasHeadingLine(cleaned, en.online)
+      : mdHasHeadingLine(cleaned, h.online) || mdHasHeadingLine(cleaned, en.online);
+
+  if (!booksOk) {
+    reasons.push(`missing books subsection (${outputLanguage === 'en' ? en.books : `${h.books} or ${en.books}`})`);
+  }
+  if (!papersOk) {
+    reasons.push(`missing papers subsection (${outputLanguage === 'en' ? en.papers : `${h.papers} or ${en.papers}`})`);
+  }
+  if (!onlineOk) {
+    reasons.push(`missing online subsection (${outputLanguage === 'en' ? en.online : `${h.online} or ${en.online}`})`);
+  }
+}
+
 /** Exported for tests — same checks used before accept/repair/fallback. */
-export function validateBibliographyMarkdown(md: string, visuals: VisualConfig): BibliographyCheck {
+export function validateBibliographyMarkdown(
+  md: string,
+  visuals: VisualConfig,
+  outputLanguage: OutputLanguage = 'en',
+): BibliographyCheck {
   const reasons: string[] = [];
   const normalized = sanitizeBibliographyText(md);
   const lines = normalized.split('\n').map((line) => normalizeEntryLine(line.trimEnd()));
@@ -101,21 +156,7 @@ export function validateBibliographyMarkdown(md: string, visuals: VisualConfig):
     }
   }
 
-  if (!/^#\s+Bibliography\b/im.test(cleaned)) {
-    reasons.push('missing "# Bibliography" heading');
-  }
-
-  const requiredHeadings = [
-    '### Books',
-    '### Research Papers & Standards',
-    '### Online Resources',
-  ];
-
-  for (const heading of requiredHeadings) {
-    if (!new RegExp(`^${heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'im').test(cleaned)) {
-      reasons.push(`missing required heading: ${heading}`);
-    }
-  }
+  validateBibliographyHeadings(cleaned, outputLanguage, reasons);
 
   const entryLines = lines.filter((line) => /^[-*]\s+/.test(line));
   if (entryLines.length < 5) reasons.push('too few bibliography entries');
@@ -167,7 +208,7 @@ async function callBibliographyLLM(
 ): Promise<string> {
   const result = await callLLM({
     model: LIGHT_MODEL,
-    systemPrompt: buildSystemPrompt(session.isTechnical),
+    systemPrompt: buildSystemPrompt(session.isTechnical, session.visuals, session.outputLanguage),
     userPrompt,
     maxTokens: 900,
     temperature: 0.2,
@@ -180,7 +221,7 @@ async function callBibliographyLLM(
   return result.content.trim();
 }
 
-function buildFallbackBibliography(topic: string, unitTitles: string[]): string {
+function buildFallbackBibliography(topic: string, unitTitles: string[], outputLanguage: OutputLanguage): string {
   const escapeForCitation = (s: string): string =>
     s
       .replace(/\r?\n+/g, ' ')
@@ -193,19 +234,22 @@ function buildFallbackBibliography(topic: string, unitTitles: string[]): string 
   const u2 = escapeForCitation(unitTitles[1] ?? topic);
   const u3 = escapeForCitation(unitTitles[2] ?? topic);
 
-  return `# Bibliography
+  const h = BIBLIOGRAPHY_HEADINGS[outputLanguage];
+  const main = `# ${h.main}`;
 
-### Books
+  return `${main}
+
+${h.books}
 - Kumar and Mehta, "Foundations of ${safeTopic}," Academic Press, 2018.
 - Robinson, "Applied Perspectives in ${u1}," Routledge, 2020.
 - Chen and Alvarez, "Methods and Practice in ${u2}," Springer, 2021.
 
-### Research Papers & Standards
+${h.papers}
 - Patel et al., "A Review of Contemporary Research in ${safeTopic}," International Journal of Applied Studies, 2021.
 - Singh and Rao, "Comparative Frameworks for ${u1}," Journal of Professional Practice, 2019.
 - ISO, "Quality Management Systems - Fundamentals and Vocabulary," ISO, 2015.
 
-### Online Resources
+${h.online}
 - Encyclopaedia Britannica, "${safeTopic}," Britannica, 2024.
 - National Library Digital Collections, "Reference Materials for ${u2}," National Library, 2023.
 - OECD Library, "Policy and Practice Resources Related to ${u3}," OECD, 2022.`;
@@ -214,10 +258,12 @@ function buildFallbackBibliography(topic: string, unitTitles: string[]): string 
 export async function generateBibliography(session: SessionState): Promise<string> {
   const structure = session.structure!;
   const unitTitles = structure.units.map((u) => u.unitTitle);
+  const lang = session.outputLanguage;
+  const h = BIBLIOGRAPHY_HEADINGS[lang];
 
-  const basePrompt = buildBibliographyPrompt(session.topic, unitTitles);
+  const basePrompt = buildBibliographyPrompt(session.topic, unitTitles, lang);
   const first = await callBibliographyLLM(session, basePrompt, 'bibliography');
-  const firstCheck = validateBibliographyMarkdown(first, session.visuals);
+  const firstCheck = validateBibliographyMarkdown(first, session.visuals, lang);
   if (firstCheck.pass) return firstCheck.cleaned;
 
   const repairPrompt = `${basePrompt}
@@ -230,10 +276,10 @@ ${firstCheck.reasons.map((r, i) => `${i + 1}. ${r}`).join('\n')}
 Hard constraints:
 - Output only valid Markdown bibliography content.
 - Use exactly these headings:
-  # Bibliography
-  ### Books
-  ### Research Papers & Standards
-  ### Online Resources
+  # ${h.main}
+  ${h.books}
+  ${h.papers}
+  ${h.online}
 - Use bullet list entries only (each entry starts with "- ").
 - 5 to 12 total entries.
 - Each entry must include a year (YYYY).
@@ -242,11 +288,11 @@ Hard constraints:
 - No "..." in author names; use complete real surnames (verify names you cite).`;
 
   const repaired = await callBibliographyLLM(session, repairPrompt, 'bibliography-repair');
-  const repairCheck = validateBibliographyMarkdown(repaired, session.visuals);
+  const repairCheck = validateBibliographyMarkdown(repaired, session.visuals, lang);
   if (repairCheck.pass) return repairCheck.cleaned;
 
   console.warn(
     `[bibliography] Falling back to deterministic bibliography for "${session.topic}" after failed validations: ${repairCheck.reasons.join('; ')}`,
   );
-  return buildFallbackBibliography(session.topic, unitTitles);
+  return buildFallbackBibliography(session.topic, unitTitles, lang);
 }

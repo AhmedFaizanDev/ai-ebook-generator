@@ -1,4 +1,6 @@
 import { SessionState, type VisualConfig } from '@/lib/types';
+import type { OutputLanguage } from '@/lib/output-language';
+import { unitExercisesHeading } from '@/lib/output-language';
 import { LIGHT_MODEL } from '@/lib/config';
 import { callLLM } from '@/lib/openai-client';
 import { incrementCounters } from '@/lib/counters';
@@ -17,14 +19,31 @@ export interface UnitExercisesValidation {
 }
 
 /** Post-validate 20 MCQs: numbering, answers, options, basic format. */
-export function validateUnitExercisesMarkdown(md: string): UnitExercisesValidation {
+export function validateUnitExercisesMarkdown(
+  md: string,
+  outputLanguage: OutputLanguage = 'en',
+): UnitExercisesValidation {
   const reasons: string[] = [];
   if (!md || !md.trim()) {
     return { pass: false, reasons: ['empty exercises markdown'] };
   }
 
-  if (!/^##\s+Exercises\b/im.test(md)) {
-    reasons.push('missing "## Exercises" heading');
+  const firstHeading = md.split('\n').find((l) => /^##\s+/.test(l.trim())) ?? '';
+  const headingOk =
+    /^##\s+Exercises\b/im.test(firstHeading) ||
+    /^##\s+Exercices\b/im.test(firstHeading) ||
+    /^##\s+Übungen\b/im.test(firstHeading) ||
+    (/^##\s+इकाई\b/u.test(firstHeading) && /अभ्यास/u.test(firstHeading));
+  if (!headingOk) {
+    reasons.push(
+      outputLanguage === 'fr'
+        ? 'missing exercises heading (expected ## Exercices de l\'unité N or legacy ## Exercises)'
+        : outputLanguage === 'de'
+          ? 'missing exercises heading (expected ## Übungen zu Einheit N or ## Exercises)'
+          : outputLanguage === 'hi'
+            ? 'missing exercises heading (expected ## इकाई N के अभ्यास or ## Exercises)'
+            : 'missing "## Exercises" heading',
+    );
   }
 
   const qCounts = new Map<number, number>();
@@ -48,9 +67,25 @@ export function validateUnitExercisesMarkdown(md: string): UnitExercisesValidati
     }
   }
 
-  const answers = md.match(/\*\*Answer:\s*[A-D]\s*\*\*/gi) ?? [];
+  const answerRe =
+    outputLanguage === 'fr'
+      ? /\*\*(?:Answer:\s*|Réponse\s*:\s*)[A-D]\s*\*\*/gi
+      : outputLanguage === 'de'
+        ? /\*\*(?:Answer:\s*|Antwort\s*:\s*)[A-D]\s*\*\*/gi
+        : outputLanguage === 'hi'
+          ? /\*\*(?:Answer:\s*|उत्तर\s*:\s*)[A-D]\s*\*\*/gi
+          : /\*\*Answer:\s*[A-D]\s*\*\*/gi;
+  const answers = md.match(answerRe) ?? [];
   if (answers.length !== 20) {
-    reasons.push(`expected 20 lines **Answer: A–D** (bold), found ${answers.length}`);
+    reasons.push(
+      outputLanguage === 'fr'
+        ? `expected 20 answer lines **Answer: X** or **Réponse : X** (bold), found ${answers.length}`
+        : outputLanguage === 'de'
+          ? `expected 20 answer lines **Answer: X** or **Antwort: X** (bold), found ${answers.length}`
+          : outputLanguage === 'hi'
+            ? `expected 20 answer lines **Answer: X** or **उत्तर: X** (bold), found ${answers.length}`
+            : `expected 20 lines **Answer: A–D** (bold), found ${answers.length}`,
+    );
   }
 
   const lineStarts = (re: RegExp) => (md.match(re) ?? []).length;
@@ -106,12 +141,12 @@ export async function generateUnitExercises(
     unitSummary,
   ] as const;
 
-  const prompt1 = buildUnitExercisesPrompt(...baseArgs, { start: 1, end: 10 });
-  const prompt2 = buildUnitExercisesPrompt(...baseArgs, { start: 11, end: 20 });
+  const prompt1 = buildUnitExercisesPrompt(...baseArgs, { start: 1, end: 10 }, session.outputLanguage);
+  const prompt2 = buildUnitExercisesPrompt(...baseArgs, { start: 11, end: 20 }, session.outputLanguage);
 
   const result1 = await callLLM({
     model: LIGHT_MODEL,
-    systemPrompt: buildSystemPrompt(session.isTechnical),
+    systemPrompt: buildSystemPrompt(session.isTechnical, session.visuals, session.outputLanguage),
     userPrompt: prompt1,
     maxTokens: 1200,
     temperature: 0.3,
@@ -124,7 +159,7 @@ export async function generateUnitExercises(
 
   const result2 = await callLLM({
     model: LIGHT_MODEL,
-    systemPrompt: buildSystemPrompt(session.isTechnical),
+    systemPrompt: buildSystemPrompt(session.isTechnical, session.visuals, session.outputLanguage),
     userPrompt: prompt2,
     maxTokens: 1200,
     temperature: 0.3,
@@ -138,6 +173,9 @@ export async function generateUnitExercises(
   const block1 = result1.content.trim();
   let block2 = result2.content.trim();
   // Strip stray ## Exercises heading from second block if model added it
+  const exHead = unitExercisesHeading(unitIndex + 1, session.outputLanguage);
+  const exEsc = exHead.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  block2 = block2.replace(new RegExp(`^${exEsc}\\s*\\n*`, 'im'), '').trim();
   block2 = block2.replace(/^##\s*Exercises\s*\n*/i, '').trim();
 
   let combined = normalizeExercisesMarkdown(block1 + '\n\n' + block2);
@@ -145,7 +183,7 @@ export async function generateUnitExercises(
   let check = mergeExerciseContentValidation(
     combined,
     session.visuals,
-    validateUnitExercisesMarkdown(combined),
+    validateUnitExercisesMarkdown(combined, session.outputLanguage),
   );
   if (check.pass) return combined;
 
@@ -157,11 +195,12 @@ export async function generateUnitExercises(
     unitSummary,
     check.reasons,
     combined,
+    session.outputLanguage,
   );
 
   const repairResult = await callLLM({
     model: LIGHT_MODEL,
-    systemPrompt: buildSystemPrompt(session.isTechnical),
+    systemPrompt: buildSystemPrompt(session.isTechnical, session.visuals, session.outputLanguage),
     userPrompt: repairPrompt,
     maxTokens: 2500,
     temperature: 0.2,
@@ -176,7 +215,7 @@ export async function generateUnitExercises(
   const repairCheck = mergeExerciseContentValidation(
     repaired,
     session.visuals,
-    validateUnitExercisesMarkdown(repaired),
+    validateUnitExercisesMarkdown(repaired, session.outputLanguage),
   );
   if (repairCheck.pass) return repaired;
 

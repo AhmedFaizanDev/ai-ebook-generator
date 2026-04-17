@@ -17,6 +17,7 @@ import { generateGlossary } from './generate-glossary';
 import { generateBibliography } from './generate-bibliography';
 import { buildFinalMarkdown } from './build-markdown';
 import { exportPDF } from '@/pdf/generate-pdf';
+import { describeThrowable } from '@/lib/describe-throwable';
 import { logPhase, logVerbose } from './debug';
 
 /** CSV/CLI batch: run PDF inside orchestrate so the session never stops at `markdown_ready` (no /api/approve). */
@@ -196,6 +197,7 @@ export async function orchestrate(session: SessionState, options?: OrchestrateOp
                   model: session.model,
                   isTechnical: session.isTechnical,
                   visuals: session.visuals,
+                  outputLanguage: session.outputLanguage,
                 },
                 session
               ),
@@ -364,9 +366,10 @@ export async function orchestrate(session: SessionState, options?: OrchestrateOp
     }
   } catch (error: unknown) {
     touch(session);
-    logPhase(session.id, 'orchestrate failed', { error: error instanceof Error ? error.message : String(error) });
+    const errText = describeThrowable(error);
+    logPhase(session.id, 'orchestrate failed', { error: errText });
     session.status = 'failed';
-    session.error = error instanceof Error ? error.message : String(error);
+    session.error = errText;
     session.finalMarkdown = null;
     // Do NOT clear structure, unitMarkdowns, microSummaries, unitSummaries, prefaceMarkdown,
     // unitIntroductions, unitEndSummaries, unitExercises, capstonesMarkdown, caseStudiesMarkdown,

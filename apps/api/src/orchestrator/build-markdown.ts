@@ -1,6 +1,13 @@
 import fs from 'fs';
 import path from 'path';
 import { SessionState } from '@/lib/types';
+import {
+  getShellStrings,
+  slugifyHeadingId,
+  unitEndSummaryHeading,
+  unitExercisesHeading,
+  type BookShellStrings,
+} from '@/lib/output-language';
 
 /** Ensure Option A is never on the same line as the question (MCQ formatting). */
 function ensureNewlineBeforeOptionA(md: string): string {
@@ -143,7 +150,7 @@ function formatIsbnWithHyphens(isbn: string): string {
   return isbn.trim();
 }
 
-function buildFrontMatterHtml(title: string, authorOverride?: string, isbn?: string): string {
+function buildFrontMatterHtml(title: string, authorOverride: string | undefined, isbn: string | undefined, shell: BookShellStrings): string {
   const author = authorOverride?.trim() ? authorOverride : pickAuthor(title);
   const year = new Date().getFullYear();
   const logoDataUrl = getCloud9LogoDataUrl();
@@ -152,7 +159,7 @@ function buildFrontMatterHtml(title: string, authorOverride?: string, isbn?: str
   const safeAuthor = escapeHtml(author);
 
   const logoImg = logoDataUrl
-    ? `<div class="cover-logo-wrap"><img src="${logoDataUrl}" alt="Cloud Nine Publishing House" class="cover-logo" /></div>`
+    ? `<div class="cover-logo-wrap"><img src="${logoDataUrl}" alt="${escapeHtml(shell.coverLogoAlt)}" class="cover-logo" /></div>`
     : '';
 
   // Page 1: Cover — title at top, author in vertical middle, logo at bottom (per reference)
@@ -171,31 +178,31 @@ ${logoImg}
   // Catalog block always shown; ISBN line shows number or blank space when missing
   const catalogBlock = `
 <div class="copyright-catalog-box">
-<p class="copyright-catalog-title"><strong>Cataloging in Publication Data</strong></p>
-<p class="copyright-catalog">${safeTitle} / Authored by: ${safeAuthor}</p>
-<p class="copyright-catalog">pages cm</p>
-<p class="copyright-catalog">Contributed articles.</p>
-<p class="copyright-catalog">Includes citation and index.</p>
-<p class="copyright-catalog">ISBN ${isbnDisplay}</p>
+<p class="copyright-catalog-title"><strong>${escapeHtml(shell.catalogTitle)}</strong></p>
+<p class="copyright-catalog">${safeTitle} / ${escapeHtml(shell.catalogAuthoredBy)} ${safeAuthor}</p>
+<p class="copyright-catalog">${escapeHtml(shell.catalogPagesCm)}</p>
+<p class="copyright-catalog">${escapeHtml(shell.catalogContributed)}</p>
+<p class="copyright-catalog">${escapeHtml(shell.catalogIncludes)}</p>
+<p class="copyright-catalog">${escapeHtml(shell.catalogIsbnLabel)} ${isbnDisplay}</p>
 </div>`;
 
   // Page 2: Copyright — static text; ISBN line always shown (blank space when not provided)
   const copyright = `<div class="copyright-page">
-<p class="publisher-intro">Published by:</p>
+<p class="publisher-intro">${escapeHtml(shell.publishedBy)}</p>
 <p class="publisher-name"><strong>Cloud Nine Publishing House</strong></p>
 <p class="publisher-address">34 Minebrook Road, Edison</p>
 <p class="publisher-address">08820, New jersey usa</p>
 
 <p class="copyright-year">©${year}</p>
-<p class="copyright-all-rights"><strong>All rights reserved.</strong></p>
+<p class="copyright-all-rights"><strong>${escapeHtml(shell.allRightsReserved)}</strong></p>
 
-<p class="copyright-para">No part of this publication may be reproduced, distributed, or transmitted in any form or by any means, including photocopying, recording, or other electronic or mechanical methods, without the prior written permission of the publisher, except in the case of brief quotations embodied in critical reviews and certain other noncommercial uses permitted by copyright law.</p>
+<p class="copyright-para">${escapeHtml(shell.copyrightNoReproduction)}</p>
 
-<p class="copyright-heading"><strong>Limits of Liability / Disclaimer of Warranty:</strong></p>
-<p class="copyright-para">The publisher and the author have used their best efforts in preparing this book. The publisher and author make no representations or warranties with respect to the accuracy or completeness of the contents of this book and specifically disclaim any implied warranties of merchantability or fitness for a particular purpose. The advice and strategies contained herein may not be suitable for every situation. Neither the publisher nor the author shall be liable for any loss of profit or any other commercial damages, including but not limited to special, incidental, consequential, or other damages.</p>
+<p class="copyright-heading"><strong>${escapeHtml(shell.limitsHeading)}</strong></p>
+<p class="copyright-para">${escapeHtml(shell.limitsBody)}</p>
 
-<p class="copyright-heading"><strong>Trademarks:</strong></p>
-<p class="copyright-para">All brand names and product names used in this book are trademarks, registered trademarks, or trade names of their respective holders.</p>
+<p class="copyright-heading"><strong>${escapeHtml(shell.trademarksHeading)}</strong></p>
+<p class="copyright-para">${escapeHtml(shell.trademarksBody)}</p>
 
 <p class="copyright-book-title">${safeTitle}</p>
 <p class="copyright-author">${safeAuthor}</p>
@@ -395,9 +402,10 @@ function assembleSegments(session: SessionState, getSubtopic: (u: number, s: num
   const structure = session.structure;
   if (!structure) return [];
   const segments: ContentSegment[] = [];
+  const shell = getShellStrings(session.outputLanguage);
 
   // 1. Cover + Copyright (raw HTML)
-  segments.push(htmlSeg(buildFrontMatterHtml(structure.title, session.author, session.isbn)));
+  segments.push(htmlSeg(buildFrontMatterHtml(structure.title, session.author, session.isbn, shell)));
 
   // 2. Preface (Markdown, with page-break before)
   if (session.prefaceMarkdown) {
@@ -409,33 +417,35 @@ function assembleSegments(session: SessionState, getSubtopic: (u: number, s: num
   const tocParts: string[] = [
     '<div style="page-break-before:always;"></div>',
     '<div class="toc">',
-    '<h2 id="table-of-contents">Table of Contents</h2>',
+    `<h2 id="table-of-contents">${escapeTocText(shell.tableOfContents)}</h2>`,
     '<div class="toc-list">',
   ];
   for (let u = 0; u < structure.units.length; u++) {
     const unitNum = u + 1;
     const unit = structure.units[u];
-    const unitSlug = slugify(`unit-${unitNum}-${unit.unitTitle}`);
-    tocParts.push(`<p style="margin:0.35em 0;font-weight:bold;"><a href="#${unitSlug}">${escapeTocText(`Unit ${unitNum}: ${unit.unitTitle}`)}</a></p>`);
+    const unitSlug = slugify(`${shell.unitWord} ${unitNum}: ${unit.unitTitle}`);
+    tocParts.push(`<p style="margin:0.35em 0;font-weight:bold;"><a href="#${unitSlug}">${escapeTocText(`${shell.unitWord} ${unitNum}: ${unit.unitTitle}`)}</a></p>`);
     for (let s = 0; s < unit.subtopics.length; s++) {
       const sub = unit.subtopics[s];
       const subSlug = slugify(`${unitNum}-${s + 1}-${sub}`);
       tocParts.push(`<p style="margin:0.15em 0;padding-left:1.5em;font-size:10pt;"><a href="#${subSlug}">${escapeTocText(`${unitNum}.${s + 1} ${sub}`)}</a></p>`);
     }
-    tocParts.push(`<p style="margin:0.15em 0;padding-left:1.5em;font-size:10pt;"><a href="#${slugify(`summary-${unitNum}`)}">Summary</a></p>`);
-    tocParts.push(`<p style="margin:0.15em 0;padding-left:1.5em;font-size:10pt;"><a href="#${slugify(`exercises-${unitNum}`)}">Exercises</a></p>`);
+    const summarySlug = slugifyHeadingId(unitEndSummaryHeading(unitNum, session.outputLanguage).replace(/^##\s+/, ''));
+    const exercisesSlug = slugifyHeadingId(unitExercisesHeading(unitNum, session.outputLanguage).replace(/^##\s+/, ''));
+    tocParts.push(`<p style="margin:0.15em 0;padding-left:1.5em;font-size:10pt;"><a href="#${summarySlug}">${escapeTocText(shell.summary)}</a></p>`);
+    tocParts.push(`<p style="margin:0.15em 0;padding-left:1.5em;font-size:10pt;"><a href="#${exercisesSlug}">${escapeTocText(shell.exercises)}</a></p>`);
   }
-  tocParts.push(`<p style="margin:0.35em 0;font-weight:bold;"><a href="#capstone-projects">${escapeTocText('Capstone Projects')}</a></p>`);
-  tocParts.push(`<p style="margin:0.35em 0;font-weight:bold;"><a href="#case-studies">${escapeTocText('Case Studies')}</a></p>`);
-  tocParts.push(`<p style="margin:0.35em 0;font-weight:bold;"><a href="#glossary">${escapeTocText('Glossary')}</a></p>`);
-  tocParts.push(`<p style="margin:0.35em 0;font-weight:bold;"><a href="#bibliography">${escapeTocText('Bibliography')}</a></p>`);
+  tocParts.push(`<p style="margin:0.35em 0;font-weight:bold;"><a href="#${shell.capstoneAnchor}">${escapeTocText(shell.capstoneProjects)}</a></p>`);
+  tocParts.push(`<p style="margin:0.35em 0;font-weight:bold;"><a href="#${shell.caseStudyAnchor}">${escapeTocText(shell.caseStudies)}</a></p>`);
+  tocParts.push(`<p style="margin:0.35em 0;font-weight:bold;"><a href="#${shell.glossaryAnchor}">${escapeTocText(shell.glossary)}</a></p>`);
+  tocParts.push(`<p style="margin:0.35em 0;font-weight:bold;"><a href="#${shell.bibliographyAnchor}">${escapeTocText(shell.bibliography)}</a></p>`);
   tocParts.push('</div></div>');
   segments.push(htmlSeg(tocParts.join('\n')));
 
   // 4. Unit content
   for (let u = 0; u < structure.units.length; u++) {
     const unit = structure.units[u];
-    const unitParts: string[] = [`# Unit ${u + 1}: ${unit.unitTitle}\n`];
+    const unitParts: string[] = [`# ${shell.unitWord} ${u + 1}: ${unit.unitTitle}\n`];
 
     const intro = session.unitIntroductions[u];
     if (intro) unitParts.push(cleanMd(intro));

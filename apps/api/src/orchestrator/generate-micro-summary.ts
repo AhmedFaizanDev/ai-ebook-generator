@@ -29,10 +29,10 @@ export async function generateMicroSummary(
       return { pass: r.pass, errors: r.errors };
     },
     async ({ repairSuffix }) => {
-      const userPrompt = buildMicroSummaryPrompt(subtopicTitle, excerpt) + (repairSuffix ?? '');
+      const userPrompt = buildMicroSummaryPrompt(subtopicTitle, excerpt, session.outputLanguage) + (repairSuffix ?? '');
       const result = await callLLM({
         model: LIGHT_MODEL,
-        systemPrompt: buildSystemPrompt(session.isTechnical),
+        systemPrompt: buildSystemPrompt(session.isTechnical, session.visuals, session.outputLanguage),
         userPrompt,
         maxTokens: 100,
         temperature: 0.1,

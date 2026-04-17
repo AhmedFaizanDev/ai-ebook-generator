@@ -29,13 +29,13 @@ export async function generateSubtopic(
       if (repairSuffix) {
         userPrompt +=
           '\n\n' +
-          buildVisualRetryPrompt(ctx.subtopicTitle, session.isTechnical, visuals, []) +
+          buildVisualRetryPrompt(ctx.subtopicTitle, session.isTechnical, visuals, [], session.outputLanguage) +
           repairSuffix;
       }
 
       const result = await callLLM({
         model: ctx.model,
-        systemPrompt: buildSystemPrompt(session.isTechnical, visuals),
+        systemPrompt: buildSystemPrompt(session.isTechnical, visuals, session.outputLanguage),
         userPrompt,
         maxTokens: 1800,
         temperature: 0.4,

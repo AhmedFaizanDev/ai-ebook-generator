@@ -31,10 +31,11 @@ export async function generateUnitEndSummary(
           unit.unitTitle,
           unit.subtopics,
           micros,
+          session.outputLanguage,
         ) + (repairSuffix ?? '');
       const result = await callLLM({
         model: LIGHT_MODEL,
-        systemPrompt: buildSystemPrompt(session.isTechnical),
+        systemPrompt: buildSystemPrompt(session.isTechnical, session.visuals, session.outputLanguage),
         userPrompt,
         maxTokens: 500,
         temperature: 0.2,

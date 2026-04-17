@@ -19,6 +19,7 @@
 - **One topic → full book:** Cover, copyright, preface, TOC, 10 units (intro + 6 subtopics + summary + 20 MCQs each), capstones, case studies, glossary, bibliography.
 - **PDF + DOCX** export; optional **Google Drive** upload.
 - **Batch mode:** CSV with title (and optional author/ISBN) → one ebook per row. Checkpoint/resume and automatic retries so long runs don’t lose progress.
+- **Output language:** `OUTPUT_LANGUAGE` (`en` or `fr`) is read once per API process or batch run from the environment (not from the CSV). Change `.env` or prefix the command and run again for another language.
 - **Docker-first:** Single image for API + batch; run locally or on a server (e.g. EC2).
 
 ---
@@ -177,6 +178,12 @@ docker compose up -d
 docker compose exec app /docker-entrypoint.sh batch /data/batch-sample.csv
 ```
 
+**French:** Set `OUTPUT_LANGUAGE=fr` in `apps/api/.env` before starting the API or batch container, or prefix the batch command on macOS/Linux, for example:
+
+```bash
+OUTPUT_LANGUAGE=fr npm run batch -- path/to/books.csv
+```
+
 **Progress:** Batch uses checkpoint/resume and retry rounds. See [CHECKPOINT_STORAGE.md](CHECKPOINT_STORAGE.md) for where progress is stored.
 
 **Duplicate prevention:** With `BATCH_SKIP_IF_IN_DRIVE=true` (default), the CLI checks Drive before generating—if PDF and DOCX already exist, the book is skipped. Set `BATCH_UPDATE_IF_EXISTS=true` to overwrite existing files instead of creating duplicates.
@@ -188,6 +195,7 @@ docker compose exec app /docker-entrypoint.sh batch /data/batch-sample.csv
 | Variable | Purpose |
 |----------|---------|
 | `OPENAI_API_KEY` | **Required.** OpenAI API key |
+| `OUTPUT_LANGUAGE` | `en` (default) or `fr` — book prose and export chrome for one language per process |
 | `OPENAI_MODEL` / `LIGHT_MODEL` | Model (default: gpt-4o-mini) |
 | `DEBUG_MODE` | `true` = 3 units, 4 subtopics (testing); unset/false = full book |
 | `GDRIVE_CLIENT_ID`, `GDRIVE_CLIENT_SECRET`, `GDRIVE_REFRESH_TOKEN` | For batch Drive upload |

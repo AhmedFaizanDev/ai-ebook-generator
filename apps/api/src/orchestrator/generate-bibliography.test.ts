@@ -23,6 +23,42 @@ ${bullets}
 - OECD, "Policy Briefs," OECD, 2022.`;
 }
 
+function bibFrenchHeadings(): string {
+  return `# Bibliographie
+
+### Ouvrages
+- H. K. Khalil, "Nonlinear Systems," Prentice Hall, 2002.
+- J. M. Maciejowski, "Predictive Control with Constraints," Prentice Hall, 2002.
+
+### Articles et normes
+- Chen, "Stability Notes," IEEE Trans. Autom. Control, 2015.
+
+### Ressources en ligne
+- NIST, "Digital Resources," NIST, 2023.
+- OECD, "Policy Briefs," OECD, 2022.`;
+}
+
+describe('validateBibliographyMarkdown — French headings', () => {
+  it('accepts French heading set when outputLanguage is fr', () => {
+    const r = validateBibliographyMarkdown(bibFrenchHeadings(), visuals, 'fr');
+    expect(r.pass).toBe(true);
+  });
+
+  it('still accepts English headings when outputLanguage is fr', () => {
+    const md = bibWithBullets(
+      `- H. K. Khalil, "Nonlinear Systems," Prentice Hall, 2002.
+- J. M. Maciejowski, "Predictive Control with Constraints," Prentice Hall, 2002.`,
+    );
+    const r = validateBibliographyMarkdown(md, visuals, 'fr');
+    expect(r.pass).toBe(true);
+  });
+
+  it('rejects French-only headings when outputLanguage is en', () => {
+    const r = validateBibliographyMarkdown(bibFrenchHeadings(), visuals, 'en');
+    expect(r.pass).toBe(false);
+  });
+});
+
 describe('validateBibliographyMarkdown — citation shape', () => {
   it('accepts well-formed entries', () => {
     const md = bibWithBullets(

@@ -24,11 +24,17 @@ export async function generateUnitIntro(
     },
     async ({ repairSuffix }) => {
       const userPrompt =
-        buildUnitIntroductionPrompt(session.topic, unitIndex, unit.unitTitle, unit.subtopics) +
+        buildUnitIntroductionPrompt(
+          session.topic,
+          unitIndex,
+          unit.unitTitle,
+          unit.subtopics,
+          session.outputLanguage,
+        ) +
         (repairSuffix ?? '');
       const result = await callLLM({
         model: LIGHT_MODEL,
-        systemPrompt: buildSystemPrompt(session.isTechnical),
+        systemPrompt: buildSystemPrompt(session.isTechnical, session.visuals, session.outputLanguage),
         userPrompt,
         maxTokens: 600,
         temperature: 0.3,

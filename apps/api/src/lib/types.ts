@@ -1,3 +1,7 @@
+import type { OutputLanguage } from '@/lib/output-language';
+
+export type { OutputLanguage } from '@/lib/output-language';
+
 export interface VisualConfig {
   equations: { enabled: boolean };
   mermaid: { enabled: boolean };
@@ -45,6 +49,8 @@ export interface SessionState {
   isTechnical: boolean;
   /** Per-book toggle for equation / Mermaid rendering in exports. */
   visuals: VisualConfig;
+  /** Resolved at session creation from batch CSV `language` column when set, else OUTPUT_LANGUAGE; preserved on resume. */
+  outputLanguage: OutputLanguage;
   /** Optional author for cover; if not set, a random author is chosen from a fixed list. */
   author?: string;
   /** Optional ISBN from batch upload CSV (column C); shown on copyright page. */
@@ -95,6 +101,8 @@ export interface SubtopicContext {
   isTechnical: boolean;
   /** Per-book visual rendering config for equations and diagrams. */
   visuals: VisualConfig;
+  /** Book output language (from session). */
+  outputLanguage: OutputLanguage;
 }
 
 export interface ContentBlockError {

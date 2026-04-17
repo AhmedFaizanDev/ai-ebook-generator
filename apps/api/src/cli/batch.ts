@@ -3,7 +3,8 @@
  * CLI batch generator — run directly via `npx tsx src/cli/batch.ts <file>`
  *
  * Reads book titles from a CSV or XLSX file. Column A = title, column B = optional author (used on cover),
- * column C = optional ISBN (shown on copyright page). If author is missing, a random author from a fixed list is used. Then for each row:
+ * column C = optional ISBN (shown on copyright page). Optional `language` (or `lang`, `output_language`) per row
+ * overrides OUTPUT_LANGUAGE for that book (en | fr | de | hi and common aliases). If author is missing, a random author from a fixed list is used. Then for each row:
  *   orchestrate → PDF → DOCX → upload to Google Drive
  *
  * Features:
@@ -42,6 +43,7 @@ import { loadSessionById, deletePersistedSession } from '@/lib/session-store';
 import { isTechnicalTopic } from '@/lib/topic-classifier';
 import type { SessionState, VisualConfig } from '@/lib/types';
 import { DEFAULT_VISUAL_CONFIG } from '@/lib/types';
+import { resolveOutputLanguage, tryParseOutputLanguage } from '@/lib/output-language';
 
 const SESSIONS_DIR = path.resolve(process.cwd(), '.sessions');
 const PROGRESS_FILE = process.env.BATCH_PROGRESS_FILE
@@ -127,13 +129,28 @@ interface BatchRow {
   author?: string;
   isbn?: string;
   domain?: string;
+  /** Raw CSV cell; when set and valid, overrides OUTPUT_LANGUAGE for this book. */
+  language?: string;
   /** When set, overrides keyword-based technical classification from title. */
   isTechnical?: boolean;
   /** Per-book visual config overrides (equations / mermaid). */
   visuals?: Partial<VisualConfig>;
 }
 
-function createBatchSession(topic: string, author?: string, isbn?: string, stableId?: string, isTechnicalOverride?: boolean, visualsOverride?: Partial<VisualConfig>): SessionState {
+/** Batch defaults to lenient export (bad Mermaid/math does not kill the PDF). Set BATCH_STRICT_EXPORT=true to hard-fail like the API default. */
+function batchStrictExportDefault(): boolean {
+  return process.env.BATCH_STRICT_EXPORT === 'true';
+}
+
+function createBatchSession(
+  topic: string,
+  author?: string,
+  isbn?: string,
+  stableId?: string,
+  isTechnicalOverride?: boolean,
+  visualsOverride?: Partial<VisualConfig>,
+  languageFromRow?: string,
+): SessionState {
   const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
   const isTechnical = typeof isTechnicalOverride === 'boolean' ? isTechnicalOverride : isTechnicalTopic(topic);
   const visuals: VisualConfig = {
@@ -141,6 +158,7 @@ function createBatchSession(topic: string, author?: string, isbn?: string, stabl
     ...visualsOverride,
     equations: { ...DEFAULT_VISUAL_CONFIG.equations, ...visualsOverride?.equations },
     mermaid: { ...DEFAULT_VISUAL_CONFIG.mermaid, ...visualsOverride?.mermaid },
+    strictMode: visualsOverride?.strictMode ?? batchStrictExportDefault(),
   };
   return {
     id: stableId ?? crypto.randomUUID(),
@@ -148,6 +166,7 @@ function createBatchSession(topic: string, author?: string, isbn?: string, stabl
     topic,
     isTechnical,
     visuals,
+    outputLanguage: resolveOutputLanguage(languageFromRow),
     author: author?.trim() || undefined,
     isbn: isbn?.trim() || undefined,
     model,
@@ -187,6 +206,7 @@ function getOrCreateSessionForBook(
   isbn?: string,
   isTechnicalOverride?: boolean,
   visualsOverride?: Partial<VisualConfig>,
+  languageFromRow?: string,
 ): { session: SessionState; resumed: boolean } {
   const sid = stableSessionId(title);
   const existing = loadSessionById(sid);
@@ -194,6 +214,12 @@ function getOrCreateSessionForBook(
     existing.lastActivityAt = Date.now();
     existing.author = author?.trim() || undefined;
     existing.isbn = isbn?.trim() || undefined;
+    const requestedLang = tryParseOutputLanguage(languageFromRow);
+    if (requestedLang && requestedLang !== existing.outputLanguage) {
+      console.warn(
+        `[BATCH] CSV language "${requestedLang}" differs from resumed session language "${existing.outputLanguage}"; keeping session language for checkpoint consistency.`,
+      );
+    }
     if (typeof isTechnicalOverride === 'boolean') {
       existing.isTechnical = isTechnicalOverride;
     }
@@ -211,10 +237,11 @@ function getOrCreateSessionForBook(
         ...(existing.visuals?.mermaid ?? {}),
         ...(visualsOverride?.mermaid ?? {}),
       },
+      strictMode: visualsOverride?.strictMode ?? batchStrictExportDefault(),
     };
     return { session: existing, resumed: true };
   }
-  const session = createBatchSession(title, author, isbn, sid, isTechnicalOverride, visualsOverride);
+  const session = createBatchSession(title, author, isbn, sid, isTechnicalOverride, visualsOverride, languageFromRow);
   return { session, resumed: false };
 }
 
@@ -329,6 +356,12 @@ async function readRowsFromExcel(filePath: string): Promise<BatchRow[]> {
     const domainRaw = getCell(row, 'domain') || getCell(row, 'Domain') || getCell(row, 'folder');
     const technicalRaw = getCell(row, 'technical') || getCell(row, 'isTechnical') || getCell(row, 'type');
     const isTechnical = parseTechnicalValue(technicalRaw);
+    const languageRaw =
+      getCell(row, 'language') ||
+      getCell(row, 'lang') ||
+      getCell(row, 'locale') ||
+      getCell(row, 'output_language') ||
+      getCell(row, 'outputLanguage');
     const equationsRaw = getCell(row, 'equations') || getCell(row, 'math');
     const mermaidRaw = getCell(row, 'mermaid') || getCell(row, 'diagrams');
     const visuals = parseVisualsColumns(equationsRaw, mermaidRaw);
@@ -337,6 +370,7 @@ async function readRowsFromExcel(filePath: string): Promise<BatchRow[]> {
       author: authorRaw.length > 0 ? authorRaw : undefined,
       isbn: normalizeBatchIsbn(isbnRaw),
       domain: domainRaw.length > 0 ? domainRaw : undefined,
+      language: languageRaw.length > 0 ? languageRaw : undefined,
       isTechnical: isTechnical,
       visuals,
     });
@@ -375,6 +409,7 @@ function readRowsFromCsv(filePath: string): BatchRow[] {
     const domainRaw = getCol(record, 'domain', 'folder');
     const technicalRaw = getCol(record, 'technical', 'isTechnical', 'type');
     const isTechnical = parseTechnicalValue(technicalRaw);
+    const languageRaw = getCol(record, 'language', 'lang', 'locale', 'output_language', 'outputLanguage');
     const equationsRaw = getCol(record, 'equations', 'math');
     const mermaidRaw = getCol(record, 'mermaid', 'diagrams');
     const visuals = parseVisualsColumns(equationsRaw, mermaidRaw);
@@ -383,6 +418,7 @@ function readRowsFromCsv(filePath: string): BatchRow[] {
       author: authorRaw.length > 0 ? authorRaw : undefined,
       isbn: normalizeBatchIsbn(isbnRaw),
       domain: domainRaw.length > 0 ? domainRaw : undefined,
+      language: languageRaw.length > 0 ? languageRaw : undefined,
       isTechnical,
       visuals,
     });
@@ -409,12 +445,13 @@ async function processBook(
   folders?: UploadFolders,
   isTechnicalOverride?: boolean,
   visualsOverride?: Partial<VisualConfig>,
+  languageFromRow?: string,
 ): Promise<void> {
   const bookStartMs = Date.now();
   const mem = process.memoryUsage();
   console.log(`[BATCH] (${index + 1}/${total}) Generating: "${title}" | heap=${Math.round(mem.heapUsed / 1024 / 1024)}MB`);
 
-  const { session, resumed } = getOrCreateSessionForBook(title, author, isbn, isTechnicalOverride, visualsOverride);
+  const { session, resumed } = getOrCreateSessionForBook(title, author, isbn, isTechnicalOverride, visualsOverride, languageFromRow);
   session.batchIndex = index + 1;
   session.batchTotal = total;
   if (resumed) {
@@ -517,10 +554,20 @@ async function main(): Promise<void> {
   }
 
   const titles = rows.map((r) => r.title);
+  const titleSet = new Set(titles);
   const progress = loadProgress();
 
   // Deduplicate the failed list from previous runs
   progress.failed = [...new Set(progress.failed)];
+  // Drop failures for titles not in this CSV (e.g. placeholder row "title" or an old batch file)
+  const prunedFailed = progress.failed.filter((t) => titleSet.has(t));
+  if (prunedFailed.length < progress.failed.length) {
+    const dropped = progress.failed.filter((t) => !titleSet.has(t));
+    console.warn(
+      `[BATCH] Removing ${dropped.length} stale failed entr(y/ies) not present in this file: ${dropped.map((t) => JSON.stringify(t)).join(', ')}`,
+    );
+    progress.failed = prunedFailed;
+  }
   saveProgress(progress);
 
   const alreadyDone = new Set(progress.completed);
@@ -652,7 +699,7 @@ async function main(): Promise<void> {
       }
 
       try {
-        await processBook(row.title, globalIdx, titles.length, row.author, row.isbn, folders, row.isTechnical, row.visuals);
+        await processBook(row.title, globalIdx, titles.length, row.author, row.isbn, folders, row.isTechnical, row.visuals, row.language);
         progress.completed.push(row.title);
         const failedIdx = progress.failed.indexOf(row.title);
         if (failedIdx !== -1) progress.failed.splice(failedIdx, 1);

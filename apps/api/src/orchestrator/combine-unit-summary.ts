@@ -22,10 +22,11 @@ export async function combineUnitSummary(
       return { pass: r.pass, errors: r.errors };
     },
     async ({ repairSuffix }) => {
-      const userPrompt = buildUnitSummaryCombinePrompt(unitTitle, microSummaries) + (repairSuffix ?? '');
+      const userPrompt =
+        buildUnitSummaryCombinePrompt(unitTitle, microSummaries, session.outputLanguage) + (repairSuffix ?? '');
       const result = await callLLM({
         model: LIGHT_MODEL,
-        systemPrompt: buildSystemPrompt(session.isTechnical),
+        systemPrompt: buildSystemPrompt(session.isTechnical, session.visuals, session.outputLanguage),
         userPrompt,
         maxTokens: 150,
         temperature: 0.15,
