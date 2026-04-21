@@ -69,12 +69,14 @@ export async function exportDOCX(session: SessionState): Promise<Buffer> {
   }
 
   const visuals = session.visuals;
+  const renderContext = { imageAssets: session.ingestImageAssets };
   const segments = buildSegments(session);
   const rawHtml = segments.length > 0
-    ? segmentsToHtml(segments, visuals)
-    : markdownToHtml(session.finalMarkdown, visuals);
+    ? segmentsToHtml(segments, visuals, renderContext)
+    : markdownToHtml(session.finalMarkdown, visuals, renderContext);
   // Preflight audit before DOCX conversion
-  if (session.visuals?.strictMode) {
+  const runPreflight = session.visuals?.strictMode === true && session.ingestMode !== true;
+  if (runPreflight) {
     const preflightErrors = auditExportHtml(rawHtml);
     if (preflightErrors.length > 0) {
       const summary = preflightErrors.map((e) => `[${e.type}] ${e.message}`).join('; ');

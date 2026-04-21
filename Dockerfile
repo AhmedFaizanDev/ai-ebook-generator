@@ -25,6 +25,9 @@ FROM node:20-slim AS runner
 # Puppeteer dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
+    poppler-utils \
+    tesseract-ocr \
+    tesseract-ocr-eng \
     fonts-liberation \
     fonts-noto-color-emoji \
     libatk-bridge2.0-0 \

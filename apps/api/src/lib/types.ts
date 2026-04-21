@@ -80,6 +80,35 @@ export interface SessionState {
   subtopicMarkdowns: Map<string, string>;
   subtopicVersions: Map<string, string[]>;
   editCount: number;
+  /** When true, exports skip strict preflight (legacy ingest HTML/markdown). */
+  ingestMode?: boolean;
+  /** Ingest CLI: adds preface, objectives, recaps, and optional per-section page breaks. */
+  ingestPremium?: boolean;
+  /** Original file path for ingest jobs (informational / logs). */
+  sourcePath?: string;
+  /** Non-fatal ingest messages (persisted with session). */
+  ingestWarnings?: string[];
+  /** Structured sections synthesized from ingest markdown for ebook-style exports. */
+  ingestSections?: Array<{
+    id: string;
+    title: string;
+    level: 1 | 2 | 3;
+    markdown: string;
+    unitIndex: number;
+    subtopicIndex: number;
+    containsTable: boolean;
+    containsMermaid: boolean;
+  }>;
+  /** Image manifest extracted from source docs/PDFs and referenced via rvimg:// IDs. */
+  ingestImageAssets?: Array<{
+    id: string;
+    filePath: string;
+    relativePath: string;
+    mimeType: string;
+    source: 'pdf' | 'docx';
+    page?: number;
+    alt?: string;
+  }>;
 }
 
 export interface SubtopicContext {

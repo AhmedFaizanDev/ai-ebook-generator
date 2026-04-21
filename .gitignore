@@ -41,3 +41,6 @@ apps/api/.sessions/
 
 # batch progress (completed/failed tracking)
 apps/api/.batch-progress.json
+
+# local ingest CLI output (large binaries)
+ingest-output-temp/

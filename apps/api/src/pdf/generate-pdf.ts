@@ -64,12 +64,13 @@ export async function exportPDF(session: SessionState): Promise<void> {
   }
 
   const visuals = session.visuals;
+  const renderContext = { imageAssets: session.ingestImageAssets };
   // Prefer structured segments (each md segment parsed independently by marked)
   // over flat finalMarkdown to prevent CommonMark HTML-block poisoning.
   const segments = buildSegments(session);
   const fullHtml = segments.length > 0
-    ? segmentsToHtml(segments, visuals)
-    : markdownToHtml(session.finalMarkdown, visuals);
+    ? segmentsToHtml(segments, visuals, renderContext)
+    : markdownToHtml(session.finalMarkdown, visuals, renderContext);
   const highlightCss = getHighlightCss();
 
   if (!fullHtml || fullHtml.trim().length === 0) {
@@ -77,7 +78,8 @@ export async function exportPDF(session: SessionState): Promise<void> {
   }
 
   // Preflight audit: detect leaked markdown/math/mermaid
-  if (session.visuals?.strictMode) {
+  const runPreflight = session.visuals?.strictMode === true && session.ingestMode !== true;
+  if (runPreflight) {
     const preflightErrors = auditExportHtml(fullHtml);
     if (preflightErrors.length > 0) {
       const summary = preflightErrors.map((e) => `[${e.type}] ${e.message}`).join('; ');
@@ -268,7 +270,9 @@ export async function exportPDF(session: SessionState): Promise<void> {
     console.log(`[PDF] Quality report: ${report.validBlocks}/${report.totalBlocks} blocks valid, ${report.leakErrors} leak errors, ${report.qualityWarnings.length} style warnings`);
   }
 
-  session.finalMarkdown = null;
+  if (!session.ingestMode) {
+    session.finalMarkdown = null;
+  }
 
   console.log(`[PDF] Export complete — ${pages.length} pages, ${Math.round(session.pdfBuffer.length / 1024)}KB`);
 }

@@ -406,6 +406,7 @@ function assembleSegments(session: SessionState, getSubtopic: (u: number, s: num
   }
 
   // 3. Table of Contents (raw HTML)
+  const ingest = !!session.ingestMode;
   const tocParts: string[] = [
     '<div style="page-break-before:always;"></div>',
     '<div class="toc">',
@@ -422,49 +423,77 @@ function assembleSegments(session: SessionState, getSubtopic: (u: number, s: num
       const subSlug = slugify(`${unitNum}-${s + 1}-${sub}`);
       tocParts.push(`<p style="margin:0.15em 0;padding-left:1.5em;font-size:10pt;"><a href="#${subSlug}">${escapeTocText(`${unitNum}.${s + 1} ${sub}`)}</a></p>`);
     }
-    tocParts.push(`<p style="margin:0.15em 0;padding-left:1.5em;font-size:10pt;"><a href="#${slugify(`summary-${unitNum}`)}">Summary</a></p>`);
-    tocParts.push(`<p style="margin:0.15em 0;padding-left:1.5em;font-size:10pt;"><a href="#${slugify(`exercises-${unitNum}`)}">Exercises</a></p>`);
+    if (!ingest) {
+      tocParts.push(`<p style="margin:0.15em 0;padding-left:1.5em;font-size:10pt;"><a href="#${slugify(`summary-${unitNum}`)}">Summary</a></p>`);
+      tocParts.push(`<p style="margin:0.15em 0;padding-left:1.5em;font-size:10pt;"><a href="#${slugify(`exercises-${unitNum}`)}">Exercises</a></p>`);
+    }
   }
-  tocParts.push(`<p style="margin:0.35em 0;font-weight:bold;"><a href="#capstone-projects">${escapeTocText('Capstone Projects')}</a></p>`);
-  tocParts.push(`<p style="margin:0.35em 0;font-weight:bold;"><a href="#case-studies">${escapeTocText('Case Studies')}</a></p>`);
-  tocParts.push(`<p style="margin:0.35em 0;font-weight:bold;"><a href="#glossary">${escapeTocText('Glossary')}</a></p>`);
-  tocParts.push(`<p style="margin:0.35em 0;font-weight:bold;"><a href="#bibliography">${escapeTocText('Bibliography')}</a></p>`);
+  if (!ingest) {
+    tocParts.push(`<p style="margin:0.35em 0;font-weight:bold;"><a href="#capstone-projects">${escapeTocText('Capstone Projects')}</a></p>`);
+    tocParts.push(`<p style="margin:0.35em 0;font-weight:bold;"><a href="#case-studies">${escapeTocText('Case Studies')}</a></p>`);
+    tocParts.push(`<p style="margin:0.35em 0;font-weight:bold;"><a href="#glossary">${escapeTocText('Glossary')}</a></p>`);
+    tocParts.push(`<p style="margin:0.35em 0;font-weight:bold;"><a href="#bibliography">${escapeTocText('Bibliography')}</a></p>`);
+  }
   tocParts.push('</div></div>');
   segments.push(htmlSeg(tocParts.join('\n')));
 
   // 4. Unit content
   for (let u = 0; u < structure.units.length; u++) {
     const unit = structure.units[u];
-    const unitParts: string[] = [`# Unit ${u + 1}: ${unit.unitTitle}\n`];
 
-    const intro = session.unitIntroductions[u];
-    if (intro) unitParts.push(cleanMd(intro));
+    if (ingest) {
+      segments.push(htmlSeg('<div style="page-break-before: always;"></div>'));
+      const intro = session.unitIntroductions[u];
+      const introMd = intro ? cleanMd(intro) : '';
+      const lead = `# Unit ${u + 1}: ${unit.unitTitle}${introMd ? `\n\n${introMd}` : ''}`;
+      segments.push(mdSeg(lead));
 
-    for (let s = 0; s < unit.subtopics.length; s++) {
-      const md = getSubtopic(u, s);
-      if (md) unitParts.push(cleanMd(md));
+      for (let s = 0; s < unit.subtopics.length; s++) {
+        const md = getSubtopic(u, s);
+        if (!md) continue;
+        if (session.ingestPremium) {
+          segments.push(htmlSeg('<div style="page-break-before: always;"></div>'));
+        }
+        segments.push(mdSeg(cleanMd(md)));
+      }
+
+      const endSummary = session.unitEndSummaries[u];
+      if (endSummary) segments.push(mdSeg(cleanMd(endSummary)));
+
+      const exercises = session.unitExercises[u];
+      if (exercises) segments.push(mdSeg(cleanMd(ensureNewlineBeforeOptionA(exercises))));
+    } else {
+      const unitParts: string[] = [`# Unit ${u + 1}: ${unit.unitTitle}\n`];
+
+      const intro = session.unitIntroductions[u];
+      if (intro) unitParts.push(cleanMd(intro));
+
+      for (let s = 0; s < unit.subtopics.length; s++) {
+        const md = getSubtopic(u, s);
+        if (md) unitParts.push(cleanMd(md));
+      }
+
+      const endSummary = session.unitEndSummaries[u];
+      if (endSummary) unitParts.push(cleanMd(endSummary));
+
+      const exercises = session.unitExercises[u];
+      if (exercises) unitParts.push(cleanMd(ensureNewlineBeforeOptionA(exercises)));
+
+      segments.push(mdSeg(unitParts.join('\n\n')));
     }
-
-    const endSummary = session.unitEndSummaries[u];
-    if (endSummary) unitParts.push(cleanMd(endSummary));
-
-    const exercises = session.unitExercises[u];
-    if (exercises) unitParts.push(cleanMd(ensureNewlineBeforeOptionA(exercises)));
-
-    segments.push(mdSeg(unitParts.join('\n\n')));
   }
 
   // 5. Capstone Projects
-  if (session.capstonesMarkdown) segments.push(mdSeg(cleanMd(session.capstonesMarkdown)));
+  if (!ingest && session.capstonesMarkdown) segments.push(mdSeg(cleanMd(session.capstonesMarkdown)));
 
   // 6. Case Studies
-  if (session.caseStudiesMarkdown) segments.push(mdSeg(cleanMd(session.caseStudiesMarkdown)));
+  if (!ingest && session.caseStudiesMarkdown) segments.push(mdSeg(cleanMd(session.caseStudiesMarkdown)));
 
   // 7. Glossary
-  if (session.glossaryMarkdown) segments.push(mdSeg(cleanMd(session.glossaryMarkdown)));
+  if (!ingest && session.glossaryMarkdown) segments.push(mdSeg(cleanMd(session.glossaryMarkdown)));
 
   // 8. Bibliography
-  if (session.bibliographyMarkdown) {
+  if (!ingest && session.bibliographyMarkdown) {
     segments.push(mdSeg(
       sanitizeBibliographyGibberish(sanitizeMarkdown(stripLlmHtmlArtifacts(session.bibliographyMarkdown))),
     ));
@@ -482,6 +511,9 @@ function segmentsToFlatMarkdown(segments: ContentSegment[]): string {
 }
 
 export function buildSegments(session: SessionState): ContentSegment[] {
+  if (!session.structure && session.ingestSections && session.ingestSections.length > 0) {
+    return session.ingestSections.map((sec) => mdSeg(cleanMd(sec.markdown)));
+  }
   return assembleSegments(session, (u, s) => {
     return session.subtopicMarkdowns.get(`u${u}-s${s}`) ?? null;
   });

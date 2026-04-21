@@ -1,6 +1,7 @@
 import { Marked, Tokens } from 'marked';
 import hljs from 'highlight.js';
 import katex from 'katex';
+import fs from 'fs';
 import type { ContentSegment } from '@/orchestrator/build-markdown';
 import type { VisualConfig } from '@/lib/types';
 import { DEFAULT_VISUAL_CONFIG } from '@/lib/types';
@@ -395,12 +396,44 @@ function createMarkedInstance(visuals: VisualConfig): Marked {
 
 function preprocessMarkdown(md: string, visuals: VisualConfig): string {
   let out = normalizeMarkdownStructure(md);
+  out = resolveIngestImageRefs(out);
   out = stripBannedFences(out);
   out = fixGfmTables(out);
   if (visuals.equations.enabled) {
     out = preprocessMath(out);
   }
   return out;
+}
+
+interface MarkdownRenderContext {
+  imageAssets?: Array<{
+    id: string;
+    filePath: string;
+    mimeType: string;
+  }>;
+}
+
+let activeRenderContext: MarkdownRenderContext | undefined;
+
+function encodeImageAsDataUrl(filePath: string, mimeType: string): string | null {
+  try {
+    const buf = fs.readFileSync(filePath);
+    return `data:${mimeType};base64,${buf.toString('base64')}`;
+  } catch {
+    return null;
+  }
+}
+
+function resolveIngestImageRefs(md: string): string {
+  if (!activeRenderContext?.imageAssets?.length) return md;
+  const map = new Map(activeRenderContext.imageAssets.map((a) => [a.id, a]));
+  return md.replace(/\((rvimg:\/\/([a-zA-Z0-9._:-]+))\)/g, (full, _uri, id: string) => {
+    const asset = map.get(id);
+    if (!asset) return full;
+    const dataUrl = encodeImageAsDataUrl(asset.filePath, asset.mimeType || 'image/png');
+    if (!dataUrl) return full;
+    return `(${dataUrl})`;
+  });
 }
 
 // ── Post-render validation ──
@@ -502,29 +535,38 @@ function repairLeakedMarkdown(html: string, marked: Marked): string {
  * When visuals.mermaid.enabled is true, ```mermaid blocks become <pre class="mermaid">
  * placeholders for Puppeteer to render.
  */
-export function segmentsToHtml(segments: ContentSegment[], visuals: VisualConfig = DEFAULT_VISUAL_CONFIG): string {
+export function segmentsToHtml(
+  segments: ContentSegment[],
+  visuals: VisualConfig = DEFAULT_VISUAL_CONFIG,
+  renderContext?: MarkdownRenderContext,
+): string {
+  activeRenderContext = renderContext;
   const marked = createMarkedInstance(visuals);
   const htmlParts: string[] = [];
 
-  for (const seg of segments) {
-    if (seg.type === 'html') {
-      htmlParts.push(seg.content);
-    } else {
-      const preprocessed = preprocessMarkdown(seg.content, visuals);
-      let rendered = marked.parse(preprocessed) as string;
+  try {
+    for (const seg of segments) {
+      if (seg.type === 'html') {
+        htmlParts.push(seg.content);
+      } else {
+        const preprocessed = preprocessMarkdown(seg.content, visuals);
+        let rendered = marked.parse(preprocessed) as string;
 
-      if (detectSwallowedContentInCodeBlocks(rendered)) {
-        console.warn('[render] Content swallowed by code block — repairing');
-        rendered = repairSwallowedCodeBlocks(rendered, marked);
+        if (detectSwallowedContentInCodeBlocks(rendered)) {
+          console.warn('[render] Content swallowed by code block — repairing');
+          rendered = repairSwallowedCodeBlocks(rendered, marked);
+        }
+
+        if (detectRawMarkdownInHtml(rendered)) {
+          console.warn('[render] Raw markdown detected in segment — applying repair pass');
+          rendered = repairLeakedMarkdown(rendered, marked);
+        }
+
+        htmlParts.push(rendered);
       }
-
-      if (detectRawMarkdownInHtml(rendered)) {
-        console.warn('[render] Raw markdown detected in segment — applying repair pass');
-        rendered = repairLeakedMarkdown(rendered, marked);
-      }
-
-      htmlParts.push(rendered);
     }
+  } finally {
+    activeRenderContext = undefined;
   }
 
   return htmlParts.join('\n');
@@ -537,9 +579,13 @@ export function segmentsToHtml(segments: ContentSegment[], visuals: VisualConfig
  * Splits the string into raw-HTML and markdown regions using a state machine,
  * then parses each markdown region independently.
  */
-export function markdownToHtml(markdown: string, visuals: VisualConfig = DEFAULT_VISUAL_CONFIG): string {
+export function markdownToHtml(
+  markdown: string,
+  visuals: VisualConfig = DEFAULT_VISUAL_CONFIG,
+  renderContext?: MarkdownRenderContext,
+): string {
   const segments = splitFlatMarkdownIntoSegments(markdown);
-  return segmentsToHtml(segments, visuals);
+  return segmentsToHtml(segments, visuals, renderContext);
 }
 
 /**

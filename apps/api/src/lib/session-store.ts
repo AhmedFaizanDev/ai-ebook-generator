@@ -21,6 +21,11 @@ function sessionFilePath(id: string): string {
   return path.join(SESSIONS_DIR, `${id}.json`);
 }
 
+/** On-disk assets for ingest jobs (images extracted from PDF/DOCX). */
+export function getIngestAssetsDir(sessionId: string): string {
+  return path.join(SESSIONS_DIR, 'ingest', sessionId);
+}
+
 interface SerializedSession extends Omit<SessionState, 'subtopicMarkdowns' | 'subtopicVersions' | 'pdfBuffer'> {
   subtopicMarkdowns: [string, string][];
   subtopicVersions: [string, string[]][];
@@ -61,6 +66,10 @@ function deserialize(raw: string): SessionState {
     subtopicMarkdowns: new Map(subtopicMarkdowns),
     subtopicVersions: new Map(subtopicVersions),
     pdfBuffer: pdfBufferBase64 ? Buffer.from(pdfBufferBase64, 'base64') : null,
+    ingestMode: typeof rest.ingestMode === 'boolean' ? rest.ingestMode : undefined,
+    ingestPremium: typeof rest.ingestPremium === 'boolean' ? rest.ingestPremium : undefined,
+    sourcePath: typeof rest.sourcePath === 'string' ? rest.sourcePath : undefined,
+    ingestWarnings: Array.isArray(rest.ingestWarnings) ? (rest.ingestWarnings as string[]) : undefined,
   } as SessionState;
   return session;
 }
@@ -140,6 +149,51 @@ function canAcceptSession(): boolean {
   return active < MAX_CONCURRENT;
 }
 
+/**
+ * Create a session for ingest / tooling without the concurrent "generating" cap.
+ * Caller should set `ingestMode` and `finalMarkdown` before export.
+ */
+export function createSessionForIngest(topic: string, model: string): SessionState {
+  const session: SessionState = {
+    id: crypto.randomUUID(),
+    status: 'queued',
+    topic,
+    isTechnical: isTechnicalTopic(topic),
+    visuals: { ...DEFAULT_VISUAL_CONFIG, strictMode: false },
+    model,
+    phase: 'ingest',
+    progress: 0,
+    currentUnit: 0,
+    currentSubtopic: 0,
+    structure: null,
+    unitMarkdowns: [],
+    microSummaries: [],
+    unitSummaries: [],
+    prefaceMarkdown: null,
+    unitIntroductions: [],
+    unitEndSummaries: [],
+    unitExercises: [],
+    capstonesMarkdown: null,
+    caseStudiesMarkdown: null,
+    glossaryMarkdown: null,
+    bibliographyMarkdown: null,
+    finalMarkdown: null,
+    pdfBuffer: null,
+    error: null,
+    callCount: 0,
+    tokenCount: 0,
+    createdAt: Date.now(),
+    lastActivityAt: Date.now(),
+    subtopicMarkdowns: new Map(),
+    subtopicVersions: new Map(),
+    editCount: 0,
+    ingestMode: true,
+  };
+  sessionMap.set(session.id, session);
+  persistSession(session);
+  return session;
+}
+
 export function createSession(topic: string, model: string): SessionState | null {
   if (!canAcceptSession()) return null;
 
@@ -213,6 +267,14 @@ export function deleteSession(id: string): void {
   }
   sessionMap.delete(id);
   removePersisted(id);
+  try {
+    const ingestDir = path.join(SESSIONS_DIR, 'ingest', id);
+    if (fs.existsSync(ingestDir)) {
+      fs.rmSync(ingestDir, { recursive: true, force: true });
+    }
+  } catch {
+    // ignore
+  }
 }
 
 export function scheduleCleanup(id: string, delayMs: number = 300_000): void {
