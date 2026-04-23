@@ -14,6 +14,7 @@ function sanitizeMarkdown(md: string): string {
   return md
     .replace(/\uFFFD/g, '') // Unicode replacement character
     .replace(/[\u200B-\u200D\uFEFF\u2060]/g, '') // Zero-width space, ZWJ, BOM, word joiner
+    .replace(/\u00AD/g, '') // Soft hyphen (often renders as odd breaks in PDF)
     .replace(/\u00A0/g, ' ') // Non-breaking space -> normal space
     .replace(/[\u2010-\u2015]/g, '-') // Unicode dashes -> hyphen
     .replace(/\u2018/g, "'")
@@ -143,43 +144,79 @@ function formatIsbnWithHyphens(isbn: string): string {
   return isbn.trim();
 }
 
-function buildFrontMatterHtml(title: string, authorOverride?: string, isbn?: string): string {
-  const author = authorOverride?.trim() ? authorOverride : pickAuthor(title);
+interface BuildFrontMatterOptions {
+  /** Ingest / import runs: neutral imprint instead of trade-publisher boilerplate. */
+  compiledFromImport?: boolean;
+}
+
+function buildFrontMatterHtml(
+  title: string,
+  authorOverride?: string,
+  isbn?: string,
+  options?: BuildFrontMatterOptions,
+): string {
+  const compiled = !!options?.compiledFromImport;
+  const author = authorOverride?.trim()
+    ? authorOverride.trim()
+    : compiled
+      ? ''
+      : pickAuthor(title);
   const year = new Date().getFullYear();
-  const logoDataUrl = getCloud9LogoDataUrl();
+  const logoDataUrl = compiled ? '' : getCloud9LogoDataUrl();
   const displayTitle = toTitleCase(title);
   const safeTitle = escapeHtml(displayTitle);
-  const safeAuthor = escapeHtml(author);
+  const authorLine = author ? escapeHtml(author) : compiled ? '<em>As stated in the source document</em>' : escapeHtml(pickAuthor(title));
+  const safeAuthor = author ? escapeHtml(author) : compiled ? '' : escapeHtml(pickAuthor(title));
 
-  const logoImg = logoDataUrl
-    ? `<div class="cover-logo-wrap"><img src="${logoDataUrl}" alt="Cloud Nine Publishing House" class="cover-logo" /></div>`
-    : '';
+  const logoImg =
+    !compiled && logoDataUrl
+      ? `<div class="cover-logo-wrap"><img src="${logoDataUrl}" alt="Cloud Nine Publishing House" class="cover-logo" /></div>`
+      : '';
 
   // Page 1: Cover — title at top, author in vertical middle, logo at bottom (per reference)
   const cover = `<div class="cover-page">
 <div class="cover-top"><h1>${safeTitle}</h1></div>
 <div class="cover-spacer"></div>
-<p class="author-line">${safeAuthor}</p>
+<p class="author-line">${authorLine}</p>
 <div class="cover-spacer"></div>
 ${logoImg}
 </div>`;
 
   const rawIsbn = isbn?.trim() ?? '';
   const isbnFormatted = rawIsbn && /\d/.test(rawIsbn) ? formatIsbnWithHyphens(rawIsbn) : '';
-  const isbnDisplay = isbnFormatted ? escapeHtml(isbnFormatted) : '&nbsp;';
+  const isbnDisplay = isbnFormatted ? escapeHtml(isbnFormatted) : compiled ? '<em>Not assigned (import)</em>' : '&nbsp;';
 
-  // Catalog block always shown; ISBN line shows number or blank space when missing
+  if (compiled) {
+    const catalogBlock = `
+<div class="copyright-catalog-box">
+<p class="copyright-catalog-title"><strong>Import notice</strong></p>
+<p class="copyright-catalog">${safeTitle}${safeAuthor ? ` / ${safeAuthor}` : ''}</p>
+<p class="copyright-catalog">This PDF was generated from an uploaded file. It is not a commercial title; cataloging and publisher fields below do not imply endorsement or peer review.</p>
+<p class="copyright-catalog">ISBN ${isbnDisplay}</p>
+</div>`;
+    const copyright = `<div class="copyright-page">
+<p class="publisher-intro">Edition type</p>
+<p class="publisher-name"><strong>Compiled PDF (imported document)</strong></p>
+<p class="copyright-year">©${year} — authors and institution as in source</p>
+<p class="copyright-para">Citation style, technical validation, and submission requirements remain the responsibility of the authors. Generated text or layout may contain errors; always compare against the original submission files.</p>
+<p class="copyright-book-title">${safeTitle}</p>
+${safeAuthor ? `<p class="copyright-author">${safeAuthor}</p>` : ''}
+<p class="copyright-isbn">ISBN: ${isbnDisplay}</p>
+${catalogBlock}
+</div>`;
+    return cover + '\n' + copyright;
+  }
+
   const catalogBlock = `
 <div class="copyright-catalog-box">
 <p class="copyright-catalog-title"><strong>Cataloging in Publication Data</strong></p>
-<p class="copyright-catalog">${safeTitle} / Authored by: ${safeAuthor}</p>
+<p class="copyright-catalog">${safeTitle} / Authored by: ${safeAuthor || escapeHtml(pickAuthor(title))}</p>
 <p class="copyright-catalog">pages cm</p>
 <p class="copyright-catalog">Contributed articles.</p>
 <p class="copyright-catalog">Includes citation and index.</p>
 <p class="copyright-catalog">ISBN ${isbnDisplay}</p>
 </div>`;
 
-  // Page 2: Copyright — static text; ISBN line always shown (blank space when not provided)
   const copyright = `<div class="copyright-page">
 <p class="publisher-intro">Published by:</p>
 <p class="publisher-name"><strong>Cloud Nine Publishing House</strong></p>
@@ -198,7 +235,7 @@ ${logoImg}
 <p class="copyright-para">All brand names and product names used in this book are trademarks, registered trademarks, or trade names of their respective holders.</p>
 
 <p class="copyright-book-title">${safeTitle}</p>
-<p class="copyright-author">${safeAuthor}</p>
+<p class="copyright-author">${safeAuthor || escapeHtml(pickAuthor(title))}</p>
 <p class="copyright-isbn">ISBN: ${isbnDisplay}</p>
 ${catalogBlock}
 </div>`;
@@ -395,9 +432,12 @@ function assembleSegments(session: SessionState, getSubtopic: (u: number, s: num
   const structure = session.structure;
   if (!structure) return [];
   const segments: ContentSegment[] = [];
+  const ingest = !!session.ingestMode;
 
   // 1. Cover + Copyright (raw HTML)
-  segments.push(htmlSeg(buildFrontMatterHtml(structure.title, session.author, session.isbn)));
+  segments.push(
+    htmlSeg(buildFrontMatterHtml(structure.title, session.author, session.isbn, { compiledFromImport: ingest })),
+  );
 
   // 2. Preface (Markdown, with page-break before)
   if (session.prefaceMarkdown) {
@@ -406,7 +446,7 @@ function assembleSegments(session: SessionState, getSubtopic: (u: number, s: num
   }
 
   // 3. Table of Contents (raw HTML)
-  const ingest = !!session.ingestMode;
+  const singleIngestUnit = ingest && structure.units.length === 1;
   const tocParts: string[] = [
     '<div style="page-break-before:always;"></div>',
     '<div class="toc">',
@@ -416,12 +456,27 @@ function assembleSegments(session: SessionState, getSubtopic: (u: number, s: num
   for (let u = 0; u < structure.units.length; u++) {
     const unitNum = u + 1;
     const unit = structure.units[u];
-    const unitSlug = slugify(`unit-${unitNum}-${unit.unitTitle}`);
-    tocParts.push(`<p style="margin:0.35em 0;font-weight:bold;"><a href="#${unitSlug}">${escapeTocText(`Unit ${unitNum}: ${unit.unitTitle}`)}</a></p>`);
+    const ingestUnitHeadingText = unit.unitTitle.trim();
+    const textbookUnitHeadingText = `Unit ${unitNum}: ${unit.unitTitle}`;
+    const unitHeadingText = ingest ? ingestUnitHeadingText : textbookUnitHeadingText;
+    const unitSlug = slugify(ingest ? ingestUnitHeadingText : textbookUnitHeadingText);
+    if (ingest && singleIngestUnit) {
+      const titleSlug = slugify(structure.title);
+      tocParts.push(
+        `<p style="margin:0.3em 0;font-weight:bold;"><a href="#${titleSlug}">${escapeTocText(structure.title)}</a></p>`,
+      );
+    } else {
+      tocParts.push(`<p style="margin:0.35em 0;font-weight:bold;"><a href="#${unitSlug}">${escapeTocText(unitHeadingText)}</a></p>`);
+    }
     for (let s = 0; s < unit.subtopics.length; s++) {
       const sub = unit.subtopics[s];
-      const subSlug = slugify(`${unitNum}-${s + 1}-${sub}`);
-      tocParts.push(`<p style="margin:0.15em 0;padding-left:1.5em;font-size:10pt;"><a href="#${subSlug}">${escapeTocText(`${unitNum}.${s + 1} ${sub}`)}</a></p>`);
+      // Ingest: href must match Marked heading ids from `## ${sub}` (slug of title text only).
+      const subSlug = ingest ? slugify(sub) : slugify(`${unitNum}-${s + 1}-${sub}`);
+      const tocLabel = singleIngestUnit ? sub : ingest ? sub : `${unitNum}.${s + 1} ${sub}`;
+      const pad = singleIngestUnit || ingest ? '0.2em' : '1.5em';
+      tocParts.push(
+        `<p style="margin:0.15em 0;padding-left:${pad};font-size:10pt;"><a href="#${subSlug}">${escapeTocText(tocLabel)}</a></p>`,
+      );
     }
     if (!ingest) {
       tocParts.push(`<p style="margin:0.15em 0;padding-left:1.5em;font-size:10pt;"><a href="#${slugify(`summary-${unitNum}`)}">Summary</a></p>`);
@@ -445,15 +500,15 @@ function assembleSegments(session: SessionState, getSubtopic: (u: number, s: num
       segments.push(htmlSeg('<div style="page-break-before: always;"></div>'));
       const intro = session.unitIntroductions[u];
       const introMd = intro ? cleanMd(intro) : '';
-      const lead = `# Unit ${u + 1}: ${unit.unitTitle}${introMd ? `\n\n${introMd}` : ''}`;
+      const singleUnit = structure.units.length === 1;
+      const lead = singleUnit
+        ? `# ${structure.title}${introMd ? `\n\n${introMd}` : ''}`
+        : `# ${unit.unitTitle.trim()}${introMd ? `\n\n${introMd}` : ''}`;
       segments.push(mdSeg(lead));
 
       for (let s = 0; s < unit.subtopics.length; s++) {
         const md = getSubtopic(u, s);
         if (!md) continue;
-        if (session.ingestPremium) {
-          segments.push(htmlSeg('<div style="page-break-before: always;"></div>'));
-        }
         segments.push(mdSeg(cleanMd(md)));
       }
 
@@ -510,6 +565,11 @@ function segmentsToFlatMarkdown(segments: ContentSegment[]): string {
   );
 }
 
+/** Layout-only HTML from segment assembly confuses markdown validators and `--md` output. */
+function stripIngestLayoutHtmlFromStoredMarkdown(md: string): string {
+  return md.replace(/<div style="page-break-before:\s*always;"><\/div>/gi, '\n\n').trim();
+}
+
 export function buildSegments(session: SessionState): ContentSegment[] {
   if (!session.structure && session.ingestSections && session.ingestSections.length > 0) {
     return session.ingestSections.map((sec) => mdSeg(cleanMd(sec.markdown)));
@@ -519,10 +579,18 @@ export function buildSegments(session: SessionState): ContentSegment[] {
   });
 }
 
+function flattenStoredMarkdown(session: SessionState): string {
+  let md = sanitizeMarkdown(segmentsToFlatMarkdown(buildSegments(session)));
+  if (session.ingestMode) {
+    md = stripIngestLayoutHtmlFromStoredMarkdown(md);
+  }
+  return md;
+}
+
 export function buildFinalMarkdown(session: SessionState): string {
-  return sanitizeMarkdown(segmentsToFlatMarkdown(buildSegments(session)));
+  return flattenStoredMarkdown(session);
 }
 
 export function rebuildFinalMarkdown(session: SessionState): string {
-  return sanitizeMarkdown(segmentsToFlatMarkdown(buildSegments(session)));
+  return flattenStoredMarkdown(session);
 }

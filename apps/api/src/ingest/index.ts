@@ -4,21 +4,70 @@ import type { SessionState } from '@/lib/types';
 import type { IngestResult } from '@/ingest/types';
 import { ingestDocx } from '@/ingest/docx';
 import { ingestPdf, type IngestPdfOptions } from '@/ingest/pdf';
-import { polishIngestedMarkdownBySubtopic } from '@/ingest/polish-markdown';
 import { getIngestAssetsDir } from '@/lib/session-store';
 import { sectionizeIngestMarkdown } from '@/ingest/ingest-structure';
 import { applyPremiumIngest, looksTechnicalForIngest } from '@/ingest/premium-ingest';
-import { rebuildFinalMarkdown } from '@/orchestrator/build-markdown';
+import { getTableReconstructionMode } from '@/ingest/ingest-config';
+import { applyVisualFidelityMarkdown } from '@/ingest/visual-fidelity';
+import {
+  applyDeterministicNormalize,
+  applyIngestDeterministicPostProcess,
+} from '@/ingest/ingest-post-process';
 
 export type { IngestResult, PdfClassification } from '@/ingest/types';
 export { classifyPdf } from '@/ingest/pdf-classify';
-export { polishIngestedMarkdown, polishIngestedMarkdownBySubtopic, splitByTopLevelHeading } from '@/ingest/polish-markdown';
+export { splitByTopLevelHeading } from '@/ingest/polish-markdown';
+
+export type { SourceBrief, SourceFlatSection, SourceSeed, SourceSlot } from '@/ingest/source-seed';
+export {
+  splitMarkdownToFlatSections,
+  extractEquationSnippets,
+  extractRvimgMarkdownLines,
+  extractGlobalKeywords,
+  keywordsForText,
+  buildSlotPlan,
+  buildSourceSeedFromFile,
+  writeSourceSeedJson,
+  visualsHintForSourceSeed,
+  type BuildSourceSeedResult,
+} from '@/ingest/source-seed';
+
+export {
+  applyDeterministicNormalize,
+  applyIngestDeterministicPostProcess,
+} from '@/ingest/ingest-post-process';
+export {
+  buildBaselineManifest,
+  writeBaselineManifest,
+  readBaselineManifest,
+  hydrateSessionFromBaselineMarkdown,
+  snapshotIngestImageAssetsForBaseline,
+  type IngestBaselineManifest,
+} from '@/ingest/ingest-baseline-manifest';
 export { sectionizeIngestMarkdown } from '@/ingest/ingest-structure';
 
 export interface IngestToSessionOptions extends IngestPdfOptions {
-  polish?: boolean;
-  /** Adds preface, learning objectives, unit recaps, and per-section page breaks in exports. Use `--polish` separately for LLM prose editing (large books may need a high LLM timeout). */
+  /** Phase 1: extract, sectionize, normalize only — no OpenAI, no premium wrappers. */
+  deterministicOnly?: boolean;
+  /** Adds preface, learning objectives, unit recaps, and per-section page breaks in exports. */
   premium?: boolean;
+}
+
+/**
+ * Phase 2 only: optional premium scaffolding + deterministic normalize.
+ * Session must already contain `structure`, `ingestSections`, `subtopicMarkdowns`, and `ingestImageAssets` (e.g. after hydrate).
+ */
+export async function runIngestEnhancePhase(
+  session: SessionState,
+  options: { premium?: boolean } = {},
+): Promise<void> {
+  if (options.premium) {
+    session.ingestPremium = true;
+    applyPremiumIngest(session);
+  } else {
+    session.ingestPremium = false;
+  }
+  applyIngestDeterministicPostProcess(session);
 }
 
 function ensureIngestDir(sessionId: string): void {
@@ -27,8 +76,7 @@ function ensureIngestDir(sessionId: string): void {
 }
 
 /**
- * Ingest a PDF/DOCX, optionally polish prose, then build a real ebook structure (units/subtopics),
- * premium scaffolding, and synchronized `finalMarkdown` for exports.
+ * Ingest a PDF/DOCX into ingest-mode session (sectionized structure + synchronized markdown for legacy export).
  */
 export async function ingestFileToSession(
   session: SessionState,
@@ -44,7 +92,7 @@ export async function ingestFileToSession(
   session.ingestMode = true;
   session.sourcePath = abs;
   session.structure = null;
-  session.ingestPremium = !!options.premium;
+  session.ingestPremium = !!options.premium && !options.deterministicOnly;
   session.ingestSections = [];
   session.ingestImageAssets = [];
   session.subtopicMarkdowns.clear();
@@ -78,20 +126,36 @@ export async function ingestFileToSession(
     throw new Error(`Unsupported ingest format: ${ext} (use .pdf or .docx)`);
   }
 
+  const tableMode = getTableReconstructionMode();
+  const vfInitial = applyVisualFidelityMarkdown(result.markdown, tableMode);
+  result.markdown = vfInitial.markdown;
+  result.warnings.push(...vfInitial.warnings);
+
   session.finalMarkdown = result.markdown;
   session.topic = result.metadata.title ?? session.topic;
 
   const technical = looksTechnicalForIngest(session.topic, abs);
+  const eqEnv = (process.env.INGEST_EQUATIONS || '').toLowerCase();
+  const forceEquations = eqEnv === '1' || eqEnv === 'true' || eqEnv === 'yes';
+  const forceEquationsOff = eqEnv === '0' || eqEnv === 'false' || eqEnv === 'no';
+  const unicodeMathWrap = process.env.INGEST_UNICODE_MATH_WRAP === '1';
+  const docxIngest = ext === '.docx';
   session.visuals = {
     ...session.visuals,
-    equations: { enabled: technical },
+    equations: {
+      enabled: !forceEquationsOff && (forceEquations || technical || unicodeMathWrap || docxIngest),
+    },
     mermaid: { enabled: true },
     strictMode: false,
   };
-
-  if (options.polish && !process.env.OPENAI_API_KEY) {
-    throw new Error('--polish requires OPENAI_API_KEY');
+  if (unicodeMathWrap) {
+    session.ingestWarnings = [
+      ...(session.ingestWarnings ?? []),
+      '[ingest] INGEST_UNICODE_MATH_WRAP=1: unicode lines may be wrapped as $…$; equations export enabled.',
+    ];
   }
+
+  const deterministic = !!options.deterministicOnly;
 
   const sectionized = sectionizeIngestMarkdown(session.finalMarkdown ?? '', session.topic);
   session.structure = sectionized.structure;
@@ -104,11 +168,7 @@ export async function ingestFileToSession(
     session.subtopicMarkdowns.set(`u${sec.unitIndex}-s${sec.subtopicIndex}`, sec.markdown);
   }
 
-  if (options.polish) {
-    await polishIngestedMarkdownBySubtopic(session);
-  }
-
-  if (options.premium) {
+  if (!deterministic && options.premium) {
     applyPremiumIngest(session);
   }
 
@@ -117,7 +177,7 @@ export async function ingestFileToSession(
   }
   session.ingestWarnings = [...(session.ingestWarnings ?? []), ...result.warnings];
 
-  session.finalMarkdown = rebuildFinalMarkdown(session);
+  applyDeterministicNormalize(session);
 
   return result;
 }

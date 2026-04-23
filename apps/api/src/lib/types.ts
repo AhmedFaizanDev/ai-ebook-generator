@@ -1,3 +1,5 @@
+import type { SourceSeed, SourceSlot } from '@/ingest/source-seed/types';
+
 export interface VisualConfig {
   equations: { enabled: boolean };
   mermaid: { enabled: boolean };
@@ -99,6 +101,8 @@ export interface SessionState {
     containsTable: boolean;
     containsMermaid: boolean;
   }>;
+  /** Last merged PDF page count from exportPDF (diagnostics / future tuning). */
+  lastExportPageCount?: number;
   /** Image manifest extracted from source docs/PDFs and referenced via rvimg:// IDs. */
   ingestImageAssets?: Array<{
     id: string;
@@ -109,6 +113,8 @@ export interface SessionState {
     page?: number;
     alt?: string;
   }>;
+  /** When set, `generateSubtopic` / structure use anchors from imported source (orchestrator-seeded path). */
+  sourceSeed?: SourceSeed;
 }
 
 export interface SubtopicContext {
@@ -124,6 +130,8 @@ export interface SubtopicContext {
   isTechnical: boolean;
   /** Per-book visual rendering config for equations and diagrams. */
   visuals: VisualConfig;
+  /** Per-slot source anchor when generating from an imported document. */
+  sourceSlot?: SourceSlot;
 }
 
 export interface ContentBlockError {

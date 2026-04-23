@@ -36,6 +36,8 @@ export interface IngestResult {
   imageAssets?: IngestImageAsset[];
   sections?: IngestSection[];
   sectionTree?: IngestSectionTree;
+  /** PDF page count or DOCX-derived estimate (words / INGEST_WORDS_PER_PAGE). */
+  estimatedSourcePages?: number;
 }
 
 /** Heuristic PDF quality signals (logged + returned to caller). */

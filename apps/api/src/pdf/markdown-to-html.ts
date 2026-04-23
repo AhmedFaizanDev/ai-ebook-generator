@@ -394,9 +394,75 @@ function createMarkedInstance(visuals: VisualConfig): Marked {
 
 // ── Pre-process a pure-markdown string before feeding to marked ──
 
+/**
+ * Fenced figure blocks (production figure/caption pipeline).
+ *
+ * ```figure
+ * Optional caption line
+ * ![alt](url)
+ * ```
+ */
+function preprocessFigureBlocks(md: string): string {
+  if (!md.includes('```figure')) return md;
+  return md.replace(/^```figure\s*\n([\s\S]*?)\n```\s*$/gm, (_block, inner: string) => {
+    const lines = inner.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+    let caption = '';
+    let imgLine = '';
+    for (const line of lines) {
+      if (/^\s*!\[/.test(line)) {
+        imgLine = line;
+        break;
+      }
+      if (!caption) caption = line;
+    }
+    if (!imgLine) {
+      return `<figure class="book-figure book-figure-invalid"><pre>${escapeHtml(inner)}</pre></figure>\n\n`;
+    }
+    const m = imgLine.match(/!\[([^\]]*)\]\(([^)]+)\)/);
+    if (!m) {
+      return `<figure class="book-figure book-figure-invalid"><pre>${escapeHtml(inner)}</pre></figure>\n\n`;
+    }
+    const alt = m[1];
+    const src = m[2];
+    const cap = caption && caption !== imgLine ? caption : alt || 'Figure';
+    return `<figure class="book-figure">\n<img src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" />\n<figcaption>${escapeHtml(cap)}</figcaption>\n</figure>\n\n`;
+  });
+}
+
+/** Turn `![](url)` + italic caption line into semantic figure (when caption looks like a figure line). */
+function preprocessImageCaptionPairs(md: string): string {
+  return md.replace(
+    /^(!\[[^\]]*\]\([^)]+\))\s*\n+\s*(\*[^*\n][^*\n]{0,200}\*|_[^_\n][^_\n]{0,200}_)\s*$/gm,
+    (_full, img: string, capRaw: string) => {
+      const m = (img as string).match(/!\[([^\]]*)\]\(([^)]+)\)/);
+      if (!m) return _full as string;
+      const cap = (capRaw as string).replace(/^\*|\*$|^_|_$/g, '').trim();
+      if (!cap) return _full as string;
+      return `<figure class="book-figure">\n<img src="${escapeHtml(m[2])}" alt="${escapeHtml(m[1])}" />\n<figcaption>${escapeHtml(cap)}</figcaption>\n</figure>\n`;
+    },
+  );
+}
+
+/** Fix Turndown / copy-paste variants so `resolveIngestImageRefs` can match asset IDs. */
+function normalizeBrokenIngestImageMarkdown(md: string): string {
+  if (!/rvimg|docx-img|img/i.test(md)) return md;
+  let s = md;
+  s = s.replace(/\]\(\s*Rvimg\s*:\s*\/*/gi, '](rvimg://');
+  s = s.replace(/\]\(\s*rvimg\s*:\s*\/*/gi, '](rvimg://');
+  s = s.replace(/rvimg:\/\/docx-Img/gi, 'rvimg://docx-img');
+  s = s.replace(/rvimg:\/\/Docx-Img/gi, 'rvimg://docx-img');
+  return s;
+}
+
+const TRANSPARENT_PNG_DATA_URL =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
 function preprocessMarkdown(md: string, visuals: VisualConfig): string {
   let out = normalizeMarkdownStructure(md);
+  out = normalizeBrokenIngestImageMarkdown(out);
   out = resolveIngestImageRefs(out);
+  out = preprocessFigureBlocks(out);
+  out = preprocessImageCaptionPairs(out);
   out = stripBannedFences(out);
   out = fixGfmTables(out);
   if (visuals.equations.enabled) {
@@ -413,6 +479,8 @@ interface MarkdownRenderContext {
   }>;
 }
 
+type MarkdownImageAsset = NonNullable<MarkdownRenderContext['imageAssets']>[number];
+
 let activeRenderContext: MarkdownRenderContext | undefined;
 
 function encodeImageAsDataUrl(filePath: string, mimeType: string): string | null {
@@ -426,12 +494,21 @@ function encodeImageAsDataUrl(filePath: string, mimeType: string): string | null
 
 function resolveIngestImageRefs(md: string): string {
   if (!activeRenderContext?.imageAssets?.length) return md;
-  const map = new Map(activeRenderContext.imageAssets.map((a) => [a.id, a]));
-  return md.replace(/\((rvimg:\/\/([a-zA-Z0-9._:-]+))\)/g, (full, _uri, id: string) => {
-    const asset = map.get(id);
-    if (!asset) return full;
+  const map = new Map<string, MarkdownImageAsset>();
+  for (const a of activeRenderContext.imageAssets) {
+    map.set(a.id, a);
+    map.set(a.id.toLowerCase(), a);
+  }
+  return md.replace(/\((rvimg:\/\/([a-zA-Z0-9._:-]+))\)/gi, (_full, _uri, idRaw: string) => {
+    const id = idRaw.trim();
+    const asset = map.get(id) ?? map.get(id.toLowerCase());
+    if (!asset) return `(${TRANSPARENT_PNG_DATA_URL})`;
+    const mime = (asset.mimeType || '').toLowerCase();
+    if (mime === 'application/octet-stream' || mime.includes('octet-stream')) {
+      return `(${TRANSPARENT_PNG_DATA_URL})`;
+    }
     const dataUrl = encodeImageAsDataUrl(asset.filePath, asset.mimeType || 'image/png');
-    if (!dataUrl) return full;
+    if (!dataUrl) return `(${TRANSPARENT_PNG_DATA_URL})`;
     return `(${dataUrl})`;
   });
 }

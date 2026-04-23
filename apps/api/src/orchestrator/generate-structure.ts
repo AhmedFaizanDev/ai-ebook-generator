@@ -4,6 +4,7 @@ import { callLLM } from '@/lib/openai-client';
 import { incrementCounters } from '@/lib/counters';
 import { SYSTEM_PROMPT_STRUCTURE } from '@/prompts/system';
 import { buildStructurePrompt, STRUCTURE_RETRY_SUFFIX } from '@/prompts/structure';
+import { buildStructurePromptWithSourceSeed } from '@/prompts/structure-seed';
 
 function validateStructure(data: unknown): data is BookStructure {
   if (!data || typeof data !== 'object') return false;
@@ -125,7 +126,9 @@ async function callAndParse(
 }
 
 export async function generateStructure(session: SessionState): Promise<BookStructure> {
-  const userPrompt = buildStructurePrompt(session.topic, session.isTechnical);
+  const userPrompt = session.sourceSeed
+    ? buildStructurePromptWithSourceSeed(session.topic, session.isTechnical, session.sourceSeed)
+    : buildStructurePrompt(session.topic, session.isTechnical);
 
   let parsed: unknown;
   try {

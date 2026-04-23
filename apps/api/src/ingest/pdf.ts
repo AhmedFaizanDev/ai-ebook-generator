@@ -191,5 +191,6 @@ export async function ingestPdf(
     metadata: { title, author: metaAuthor },
     warnings,
     imageAssets,
+    estimatedSourcePages: classification.pageCount,
   };
 }

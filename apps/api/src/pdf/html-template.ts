@@ -434,6 +434,167 @@ td:has(.katex), th:has(.katex) {
 
 let katexCssCache: string | null = null;
 
+/**
+ * Ingest books inject layout page-break divs before units; global `h1 { page-break-before: always }`
+ * stacks with those divs and creates thin/blank pages. Apply only on `<body class="ingest-book">`.
+ */
+export const PRINT_CSS_INGEST_BOOK = `
+body.ingest-book h1 {
+  page-break-before: auto !important;
+  break-before: auto !important;
+}
+body.ingest-book .cover-page h1 {
+  page-break-before: avoid !important;
+}
+`;
+
+/** Optional production layout: list rhythm, chapter lede, section counters, figure numbers, index stub. */
+export const PRINT_CSS_LAYOUT_EXTENSIONS = `
+/* --- Baseline layout polish (always with body.print-book--layout) --- */
+body.print-book--layout ul,
+body.print-book--layout ol {
+  margin: 0.55em 0;
+  padding-left: 1.75em;
+}
+body.print-book--layout ul ul,
+body.print-book--layout ol ol {
+  margin: 0.25em 0;
+  padding-left: 1.35em;
+}
+body.print-book--layout li {
+  margin: 0.28em 0;
+  line-height: 1.55;
+}
+body.print-book--layout li > p {
+  margin: 0.2em 0;
+}
+/* Chapter entry: first paragraph after a major heading */
+body.print-book--layout h1 + p {
+  margin-top: 0.35em;
+  margin-bottom: 1.05em;
+  line-height: 1.58;
+  text-indent: 0;
+}
+body.print-book--dropcap h1 + p::first-letter {
+  float: left;
+  font-size: 2.55em;
+  line-height: 0.92;
+  padding-right: 0.06em;
+  margin-top: 0.06em;
+  font-weight: bold;
+  font-family: 'Georgia', 'Times New Roman', serif;
+}
+/* Semantic figures (from markdown pipeline) */
+figure.book-figure {
+  margin: 1.05em auto;
+  max-width: 100%;
+  text-align: center;
+  page-break-inside: avoid;
+}
+figure.book-figure img {
+  max-width: 100%;
+  height: auto;
+  display: inline-block;
+}
+figure.book-figure figcaption {
+  margin-top: 0.5em;
+  font-size: 9.5pt;
+  font-style: italic;
+  text-align: center;
+  color: #333;
+  line-height: 1.35;
+}
+.print-index-stub {
+  page-break-before: always;
+  margin-top: 1cm;
+}
+.print-index-stub .print-index-note {
+  font-size: 9.5pt;
+  color: #555;
+  font-style: italic;
+}
+.xref-unresolved {
+  font-size: 9pt;
+  color: #a63;
+  border-bottom: 1px dashed #c96;
+}
+/* Optional: numbered sections (non-ingest books; enable PDF_SECTION_COUNTERS=1) */
+body.print-book--section-numbers {
+  counter-reset: chapnum 0;
+}
+body.print-book--section-numbers h1 {
+  counter-increment: chapnum;
+  counter-reset: secnum 0;
+}
+body.print-book--section-numbers h2::before {
+  counter-increment: secnum;
+  counter-reset: subsecnum 0;
+  content: counter(chapnum) "." counter(secnum) "\\00a0";
+  font-weight: bold;
+}
+body.print-book--section-numbers h3::before {
+  counter-increment: subsecnum;
+  content: counter(chapnum) "." counter(secnum) "." counter(subsecnum) "\\00a0";
+  font-weight: bold;
+  color: #333;
+}
+/* Optional: figure auto-numbering per chapter (PDF_FIGURE_NUMBERS=1) */
+body.print-book--fig-numbers h1 {
+  counter-reset: bookfig 0;
+}
+body.print-book--fig-numbers figure.book-figure {
+  counter-increment: bookfig;
+}
+body.print-book--fig-numbers figure.book-figure figcaption::before {
+  content: "Figure " counter(bookfig) ". ";
+  font-style: normal;
+  font-weight: bold;
+  margin-right: 0.35em;
+}
+/* GFM tables: academic-style grid for thesis / report imports */
+body.print-book--layout table,
+body.ingest-book table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 9.75pt;
+  margin: 0.85em 0;
+}
+body.print-book--layout th,
+body.print-book--layout td,
+body.ingest-book th,
+body.ingest-book td {
+  border: 0.5pt solid #222;
+  padding: 0.35em 0.55em;
+  vertical-align: top;
+  text-align: left;
+}
+body.print-book--layout th,
+body.ingest-book th {
+  font-weight: 600;
+  background: #f4f4f4;
+}
+`;
+
+export interface PrintLayoutSessionFlags {
+  ingestMode?: boolean;
+}
+
+/** Body classes for PDF/DOCX print layout extensions (driven by env + ingest mode). */
+export function buildPrintBodyClasses(flags: PrintLayoutSessionFlags): string {
+  const parts = ['print-book--layout'];
+  if (flags.ingestMode) parts.push('ingest-book');
+  if (!flags.ingestMode && process.env.PDF_SECTION_COUNTERS === '1') {
+    parts.push('print-book--section-numbers');
+  }
+  if (process.env.PDF_FIGURE_NUMBERS === '1') {
+    parts.push('print-book--fig-numbers');
+  }
+  if (process.env.PDF_CHAPTER_DROPCAP === '1') {
+    parts.push('print-book--dropcap');
+  }
+  return parts.join(' ');
+}
+
 export function getMathCss(): string {
   if (!katexCssCache) {
     try {
@@ -447,21 +608,29 @@ export function getMathCss(): string {
   return katexCssCache;
 }
 
-export function wrapInHtmlTemplate(bodyHtml: string, highlightCss: string, options?: { mathEnabled?: boolean }): string {
+export function wrapInHtmlTemplate(
+  bodyHtml: string,
+  highlightCss: string,
+  options?: { mathEnabled?: boolean; ingestBook?: boolean; bodyClass?: string },
+): string {
   const mathCss = options?.mathEnabled ? getMathCss() : '';
   const mathOverrides = options?.mathEnabled ? PRINT_MATH_OVERRIDES : '';
+  const ingestCss = options?.ingestBook ? PRINT_CSS_INGEST_BOOK : '';
+  const bodyClass = options?.bodyClass?.trim() || (options?.ingestBook ? 'ingest-book' : '');
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <style>
 ${PRINT_CSS}
+${PRINT_CSS_LAYOUT_EXTENSIONS}
+${ingestCss}
 ${highlightCss}
 ${mathCss}
 ${mathOverrides}
 </style>
 </head>
-<body>
+<body${bodyClass ? ` class="${bodyClass.replace(/"/g, '')}"` : ''}>
 ${bodyHtml}
 </body>
 </html>`;

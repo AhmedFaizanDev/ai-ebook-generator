@@ -14,6 +14,100 @@ function hasTable(md: string): boolean {
   return /^\s*\|.+\|\s*$/m.test(md);
 }
 
+function hasFigureLine(md: string): boolean {
+  return /!\[[^\]]*\]\([^)]+\)/.test(md);
+}
+
+function isTocLikeBody(body: string): boolean {
+  const lines = body.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (lines.length < 5) return false;
+  let score = 0;
+  for (const line of lines) {
+    if (/\.{4,}/.test(line) && /\d+\s*$/.test(line)) score += 1;
+    if (/^\d+\.[\d.]*\s+.+\s+\d+\s*$/.test(line)) score += 1;
+  }
+  return score >= Math.min(8, Math.ceil(lines.length * 0.25));
+}
+
+function isTocLikeBlock(block: RawBlock): boolean {
+  const h = block.heading.trim().toLowerCase();
+  if (/^(table of contents|contents|list of figures|list of tables)$/i.test(h)) return true;
+  return isTocLikeBody(block.body.join('\n'));
+}
+
+/** Merge consecutive TOC/list blocks so they do not each spawn a top-level unit. */
+function collapseTocRuns(blocks: RawBlock[]): RawBlock[] {
+  const out: RawBlock[] = [];
+  let i = 0;
+  while (i < blocks.length) {
+    if (!isTocLikeBlock(blocks[i]!)) {
+      out.push(blocks[i]!);
+      i += 1;
+      continue;
+    }
+    let j = i;
+    const parts: string[] = [];
+    while (j < blocks.length && isTocLikeBlock(blocks[j]!)) {
+      const b = blocks[j]!;
+      parts.push(`### ${b.heading}`, ...b.body, '');
+      j += 1;
+    }
+    out.push({
+      headingLevel: 2,
+      heading: 'Table of contents (from source)',
+      body: parts,
+    });
+    i = j;
+  }
+  return out;
+}
+
+function isTrivialHeadingBlock(b: RawBlock): boolean {
+  const bodyJoin = b.body.join('\n');
+  const bodyTrim = bodyJoin.trim();
+  return (
+    b.headingLevel >= 2 &&
+    bodyTrim.length < 48 &&
+    !hasTable(bodyJoin) &&
+    !hasMermaid(bodyJoin) &&
+    !hasFigureLine(bodyJoin)
+  );
+}
+
+/** Merge tiny heading-only sections (including runs of them) into the following section. */
+function mergeTrivialHeadingBlocks(blocks: RawBlock[]): RawBlock[] {
+  const out: RawBlock[] = [];
+  let i = 0;
+  while (i < blocks.length) {
+    const b = blocks[i]!;
+    if (isTrivialHeadingBlock(b) && i + 1 < blocks.length) {
+      const prefix: string[] = [`### ${b.heading}`, '', ...b.body, ''];
+      let j = i + 1;
+      while (j < blocks.length && isTrivialHeadingBlock(blocks[j]!)) {
+        const t = blocks[j]!;
+        prefix.push(`### ${t.heading}`, '', ...t.body, '');
+        j += 1;
+      }
+      if (j < blocks.length) {
+        const nxt = blocks[j]!;
+        out.push({
+          headingLevel: nxt.headingLevel,
+          heading: nxt.heading,
+          body: [...prefix, '', ...nxt.body],
+        });
+        i = j + 1;
+        continue;
+      }
+      out.push({ ...b, body: prefix });
+      i = j;
+      continue;
+    }
+    out.push(b);
+    i += 1;
+  }
+  return out;
+}
+
 function isPageHeading(text: string): boolean {
   const t = text.trim().toLowerCase();
   return /^page\s+\d+$/.test(t) || /^\d+(?:\.\d+)*\s+page\s+\d+$/.test(t);
@@ -26,43 +120,48 @@ function cleanHeading(raw: string): string | null {
   return heading;
 }
 
-function safeMermaidId(s: string): string {
-  const id = s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-  return id || 'n';
-}
-
-function buildUnitVisualEnrichment(unitTitle: string, subtopics: string[]): string {
-  const rows = subtopics.slice(0, 10).map((t) => `| ${t.replace(/\|/g, '/')} | Core concepts and worked examples |`).join('\n');
-  const table = [
-    `### ${unitTitle.replace(/#/g, '')} — at a glance`,
-    '',
-    '| Section | Focus |',
-    '| --- | --- |',
-    rows || '| Overview | Core concepts and worked examples |',
-    '',
-  ].join('\n');
-
-  const nodes = (subtopics.length > 0 ? subtopics : ['Overview']).slice(0, 10);
-  const lines: string[] = ['```mermaid', 'flowchart LR'];
-  for (let i = 0; i < nodes.length; i++) {
-    const n = nodes[i]!.replace(/"/g, "'").slice(0, 60);
-    const id = `n${i}_${safeMermaidId(unitTitle)}`;
-    lines.push(`  ${id}["${n}"]`);
-    if (i > 0) {
-      const prevId = `n${i - 1}_${safeMermaidId(unitTitle)}`;
-      lines.push(`  ${prevId} --> ${id}`);
-    }
-  }
-  lines.push('```', '');
-  return `${table}\n${lines.join('\n')}`;
-}
-
 type RawBlock = { headingLevel: 1 | 2 | 3; heading: string; body: string[] };
 
 /** Lines that look like structural headings in Word exports without proper heading styles. */
 function inferHeadingFromPlainLine(trimmed: string): { level: 1 | 2 | 3; title: string } | null {
   if (/^#{1,3}\s/.test(trimmed)) return null;
   if (trimmed.length > 120) return null;
+  const collapsed = trimmed.replace(/\s+/g, ' ');
+  const u = collapsed.toUpperCase();
+  const thesisH1 = new Set([
+    'ABSTRACT',
+    'ACKNOWLEDGEMENT',
+    'ACKNOWLEDGEMENTS',
+    'ACKNOWLEDGMENT',
+    'ACKNOWLEDGMENTS',
+    'DECLARATION',
+    'CERTIFICATE',
+    'EXECUTIVE SUMMARY',
+    'TABLE OF CONTENTS',
+    'LIST OF FIGURES',
+    'LIST OF TABLES',
+    'REFERENCES',
+    'REFERENCE',
+    'REFERANCE',
+    'BIBLIOGRAPHY',
+    'INTRODUCTION',
+    'LITERATURE REVIEW',
+    'METHODOLOGY',
+    'RESULTS AND DISCUSSION',
+    'RESULTS',
+    'DISCUSSION',
+    'CONCLUSION',
+    'CONCLUSIONS',
+    'RECOMMENDATIONS',
+    'NOMENCLATURE',
+    'ABBREVIATIONS',
+  ]);
+  if (thesisH1.has(u)) {
+    return { level: 1, title: trimmed };
+  }
+  if (/^appendix\s+[\w.-]+$/i.test(collapsed) && collapsed.length < 80) {
+    return { level: 1, title: trimmed };
+  }
   if (/^(chapter|part|unit|module)\s+\d+/i.test(trimmed)) {
     return { level: 1, title: trimmed };
   }
@@ -123,14 +222,14 @@ function splitMarkdownIntoRawBlocks(markdown: string, bookTitle: string): RawBlo
     }
 
     if (!current) {
-      current = { headingLevel: 2, heading: 'Overview', body: [] };
+      current = { headingLevel: 2, heading: 'Body', body: [] };
     }
     current.body.push(line);
   }
   flushRawBlock(current, rawBlocks);
 
   if (rawBlocks.length === 0) {
-    rawBlocks.push({ headingLevel: 2, heading: 'Overview', body: [markdown] });
+    rawBlocks.push({ headingLevel: 2, heading: 'Body', body: [markdown] });
   }
 
   return rawBlocks;
@@ -141,7 +240,7 @@ function expandOversizedOverviewBlocks(rawBlocks: RawBlock[], maxBodyChars: numb
   const out: RawBlock[] = [];
   for (const block of rawBlocks) {
     const body = block.body.join('\n');
-    if (block.heading === 'Overview' && body.length > maxBodyChars) {
+    if ((block.heading === 'Overview' || block.heading === 'Body' || block.heading === 'Opening') && body.length > maxBodyChars) {
       const paras = body.split(/\n\n+/);
       let buf: string[] = [];
       let n = 0;
@@ -228,6 +327,22 @@ function assignUnitsAndSections(
         });
         currentSubtopicIndex += 1;
         h2InCurrentUnit += 1;
+      } else {
+        // Avoid empty units / TOC-only shells: keep heading as a real section with an explicit stub.
+        unit.subtopics.push(headingTitle);
+        const sectionMarkdown = `## ${headingTitle}\n\n`;
+        sections.push({
+          id: `u${currentUnitIndex}-s${currentSubtopicIndex}`,
+          title: headingTitle,
+          level: 2,
+          markdown: sectionMarkdown,
+          unitIndex: currentUnitIndex,
+          subtopicIndex: currentSubtopicIndex,
+          containsTable: hasTable(sectionMarkdown),
+          containsMermaid: hasMermaid(sectionMarkdown),
+        });
+        currentSubtopicIndex += 1;
+        h2InCurrentUnit += 1;
       }
       continue;
     }
@@ -275,28 +390,6 @@ function assignUnitsAndSections(
   return { units, sections };
 }
 
-function ensureVisualsPerUnit(
-  structure: BookStructure,
-  sections: IngestSection[],
-): void {
-  for (let u = 0; u < structure.units.length; u++) {
-    const unitSections = sections.filter((s) => s.unitIndex === u);
-    if (unitSections.length === 0) continue;
-    const hasUnitTable = unitSections.some((s) => s.containsTable);
-    const hasUnitMermaid = unitSections.some((s) => s.containsMermaid);
-    if (!hasUnitTable || !hasUnitMermaid) {
-      const first = unitSections[0]!;
-      const enrich = buildUnitVisualEnrichment(
-        structure.units[u]!.unitTitle,
-        structure.units[u]!.subtopics,
-      );
-      first.markdown = `${first.markdown}\n\n${enrich}`.trim();
-      first.containsTable = true;
-      first.containsMermaid = true;
-    }
-  }
-}
-
 /**
  * Turn flat / semi-structured ingest markdown into BookStructure + per-subtopic sections.
  */
@@ -305,6 +398,8 @@ export function sectionizeIngestMarkdown(markdown: string, fallbackTitle: string
   const bookTitle = (titleMatch?.[1]?.trim() || fallbackTitle || 'Ingested Book').trim();
 
   let rawBlocks = splitMarkdownIntoRawBlocks(markdown, bookTitle);
+  rawBlocks = mergeTrivialHeadingBlocks(rawBlocks);
+  rawBlocks = collapseTocRuns(rawBlocks);
   const h2Sections = rawBlocks.filter((b) => b.headingLevel >= 2).length;
   if (h2Sections < 4 && markdown.length > 12_000) {
     rawBlocks = expandOversizedOverviewBlocks(rawBlocks, 7000);
@@ -321,8 +416,6 @@ export function sectionizeIngestMarkdown(markdown: string, fallbackTitle: string
     capstoneTopics: [],
     caseStudyTopics: [],
   };
-
-  ensureVisualsPerUnit(structure, sections);
 
   return { structure, sections };
 }

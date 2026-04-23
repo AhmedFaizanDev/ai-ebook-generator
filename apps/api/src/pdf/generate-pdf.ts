@@ -2,7 +2,8 @@ import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { SessionState } from '@/lib/types';
 import { segmentsToHtml, markdownToHtml, getHighlightCss } from './markdown-to-html';
 import { buildSegments } from '@/orchestrator/build-markdown';
-import { wrapInHtmlTemplate } from './html-template';
+import { wrapInHtmlTemplate, buildPrintBodyClasses } from './html-template';
+import { stampExportAnchors, resolveRefPlaceholders, buildPrintIndexStubHtml } from './export-anchor-pass';
 import { getBrowser, closeBrowser } from './browser-pool';
 import { auditExportHtml } from './export-preflight';
 import { buildExportQualityReport } from '@/orchestrator/content-validator';
@@ -58,6 +59,39 @@ function flattenChunks(chunks: string[]): string[] {
   return result;
 }
 
+/** Rough visible text length (strip tags) to detect near-empty PDF chunks. */
+function stripHtmlToApproxText(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Merge consecutive HTML fragments when a fragment has very little text (common after H1 splits),
+ * so Puppeteer does not print nearly blank pages. Respects maxHtmlChars per merged chunk.
+ */
+function mergeSmallHtmlChunks(chunks: string[], minTextChars: number, maxHtmlChars: number): string[] {
+  if (chunks.length <= 1) return chunks;
+  const out: string[] = [];
+  let acc = chunks[0] ?? '';
+  for (let i = 1; i < chunks.length; i++) {
+    const next = chunks[i]!;
+    const nextLen = stripHtmlToApproxText(next).length;
+    const merged = `${acc}\n${next}`;
+    if (nextLen < minTextChars && merged.length <= maxHtmlChars) {
+      acc = merged;
+    } else {
+      out.push(acc);
+      acc = next;
+    }
+  }
+  out.push(acc);
+  return out;
+}
+
 export async function exportPDF(session: SessionState): Promise<void> {
   if (!session.finalMarkdown) {
     throw new Error('No finalMarkdown to render');
@@ -68,10 +102,28 @@ export async function exportPDF(session: SessionState): Promise<void> {
   // Prefer structured segments (each md segment parsed independently by marked)
   // over flat finalMarkdown to prevent CommonMark HTML-block poisoning.
   const segments = buildSegments(session);
-  const fullHtml = segments.length > 0
+  let fullHtml = segments.length > 0
     ? segmentsToHtml(segments, visuals, renderContext)
     : markdownToHtml(session.finalMarkdown, visuals, renderContext);
   const highlightCss = getHighlightCss();
+
+  if (process.env.PDF_INDEX_STUB === '1' && session.finalMarkdown) {
+    const titles = Array.from(session.finalMarkdown.matchAll(/^##\s+(.+)$/gm))
+      .map((m) => m[1].trim())
+      .filter(Boolean)
+      .slice(0, 80);
+    if (titles.length) {
+      fullHtml += `\n${buildPrintIndexStubHtml(titles)}`;
+    }
+  }
+
+  const stamped = stampExportAnchors(fullHtml);
+  fullHtml = resolveRefPlaceholders(stamped.html, stamped.manifest);
+  if (process.env.PDF_EXPORT_ANCHOR_LOG === '1') {
+    console.log(
+      `[PDF] Anchor pass: ${stamped.manifest.headings.length} heading(s), ${stamped.manifest.figures.length} figure(s) stamped`,
+    );
+  }
 
   if (!fullHtml || fullHtml.trim().length === 0) {
     throw new Error('Converted HTML is empty — cannot generate PDF');
@@ -90,19 +142,39 @@ export async function exportPDF(session: SessionState): Promise<void> {
 
   const byH1 = splitHtmlByH1(fullHtml);
   const rawChunks = byH1.length > 0 ? byH1 : [fullHtml];
-  const htmlChunks = flattenChunks(rawChunks);
+  let htmlChunks = flattenChunks(rawChunks);
+
+  if (session.ingestMode && htmlChunks.length > 1) {
+    const merged = mergeSmallHtmlChunks(htmlChunks, 320, Math.floor(MAX_CHUNK_CHARS * 0.92));
+    if (merged.length < htmlChunks.length) {
+      console.log(`[PDF] Merged ${htmlChunks.length} HTML chunks to ${merged.length} (ingest: skip near-empty fragments)`);
+    }
+    htmlChunks = merged;
+  }
 
   if (htmlChunks.length === 0) {
     throw new Error('No HTML chunks produced after splitting — cannot generate PDF');
   }
 
   const pdfBuffers: Buffer[] = [];
+  const useHeaderFooter = process.env.PDF_HEADER_FOOTER === '1';
+  const escapeXml = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const headerTitle = escapeXml((session.topic || 'Book').slice(0, 140));
   const pdfOptions = {
     format: 'A4' as const,
-    margin: { top: '2cm', bottom: '2.5cm', left: '2cm', right: '2cm' },
+    margin: useHeaderFooter
+      ? { top: '2.85cm', bottom: '2.65cm', left: '2cm', right: '2cm' }
+      : { top: '2cm', bottom: '2.5cm', left: '2cm', right: '2cm' },
     preferCSSPageSize: true,
     printBackground: true,
-    displayHeaderFooter: false,
+    displayHeaderFooter: useHeaderFooter,
+    headerTemplate: useHeaderFooter
+      ? `<div style="font-size:9px;width:100%;text-align:center;padding:0 10px;color:#333;">${headerTitle}</div>`
+      : '',
+    footerTemplate: useHeaderFooter
+      ? '<div style="font-size:9px;width:100%;text-align:center;"><span class="pageNumber"></span></div>'
+      : '',
     timeout: 180_000,
   };
 
@@ -122,7 +194,11 @@ export async function exportPDF(session: SessionState): Promise<void> {
   console.log(`[PDF] Rendering ${htmlChunks.length} chunks...`);
 
   for (let i = 0; i < htmlChunks.length; i++) {
-    const wrappedHtml = wrapInHtmlTemplate(htmlChunks[i], highlightCss, { mathEnabled: visuals?.equations?.enabled });
+    const wrappedHtml = wrapInHtmlTemplate(htmlChunks[i], highlightCss, {
+      mathEnabled: visuals?.equations?.enabled,
+      ingestBook: !!session.ingestMode,
+      bodyClass: buildPrintBodyClasses({ ingestMode: !!session.ingestMode }),
+    });
     let lastErr: Error | null = null;
 
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
@@ -260,6 +336,7 @@ export async function exportPDF(session: SessionState): Promise<void> {
   }
 
   session.pdfBuffer = Buffer.from(await merged.save());
+  session.lastExportPageCount = pages.length;
 
   // Emit quality report
   if (session.finalMarkdown) {
@@ -270,9 +347,7 @@ export async function exportPDF(session: SessionState): Promise<void> {
     console.log(`[PDF] Quality report: ${report.validBlocks}/${report.totalBlocks} blocks valid, ${report.leakErrors} leak errors, ${report.qualityWarnings.length} style warnings`);
   }
 
-  if (!session.ingestMode) {
-    session.finalMarkdown = null;
-  }
+  // Keep session.finalMarkdown after PDF so callers can export DOCX (or re-PDF) in the same session.
 
   console.log(`[PDF] Export complete — ${pages.length} pages, ${Math.round(session.pdfBuffer.length / 1024)}KB`);
 }

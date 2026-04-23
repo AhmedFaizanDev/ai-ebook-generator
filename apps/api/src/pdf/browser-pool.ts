@@ -62,8 +62,9 @@ export async function closeBrowser(): Promise<void> {
 }
 
 if (typeof process !== 'undefined') {
+  /** Close Chromium; exit 130 so scripts know the run was interrupted (not success). */
   const shutdown = () => {
-    closeBrowser().finally(() => process.exit(0));
+    void closeBrowser().finally(() => process.exit(130));
   };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);

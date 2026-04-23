@@ -11,6 +11,8 @@
     "start": "node -r module-alias/register dist/index.js",
     "batch": "tsx src/cli/batch.ts",
     "ingest-book": "tsx src/cli/ingest-book.ts",
+    "generate-from-source": "tsx src/cli/generate-from-source.ts",
+    "golden-ingest-validate": "tsx src/cli/golden-ingest-validate.ts",
     "batch-status": "tsx src/cli/batch-status.ts",
     "test": "vitest run",
     "test:watch": "vitest"

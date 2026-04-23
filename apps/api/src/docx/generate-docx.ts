@@ -1,7 +1,14 @@
 import { SessionState } from '@/lib/types';
 import { segmentsToHtml, markdownToHtml, getHighlightCss } from '@/pdf/markdown-to-html';
 import { buildSegments } from '@/orchestrator/build-markdown';
-import { PRINT_CSS, getMathCss, PRINT_MATH_OVERRIDES } from '@/pdf/html-template';
+import {
+  PRINT_CSS,
+  PRINT_CSS_LAYOUT_EXTENSIONS,
+  PRINT_CSS_INGEST_BOOK,
+  getMathCss,
+  PRINT_MATH_OVERRIDES,
+  buildPrintBodyClasses,
+} from '@/pdf/html-template';
 import { auditExportHtml } from '@/pdf/export-preflight';
 import { getBrowser } from '@/pdf/browser-pool';
 
@@ -22,6 +29,9 @@ pre { font-family: Consolas, "Courier New", monospace !important; font-size: 9pt
   background: #f6f8fa !important; padding: 10px 14px !important; border-left: 3px solid #ccc !important; }
 pre code { background: transparent !important; font-size: inherit !important; }
 strong, b { font-weight: bold; }
+figure.book-figure { margin: 1em 0; text-align: center; page-break-inside: avoid; }
+figure.book-figure img { max-width: 100%; height: auto; }
+figure.book-figure figcaption { font-size: 10pt; font-style: italic; margin-top: 0.4em; }
 `;
 
 /**
@@ -41,6 +51,34 @@ function enhanceHtmlForDocx(html: string): string {
  * html-to-docx only recognises <div class="page-break" style="page-break-after: always;"></div>.
  * Inject these at every major section boundary (cover, copyright, TOC, each unit).
  */
+/**
+ * html-to-docx uses image-size on <img src>; WMF/EMF/SVG and bad data URLs throw and abort export.
+ * Logs one summary line (per-image console.warn is extremely slow on thesis-sized HTML).
+ */
+function sanitizeImagesForHtmlToDocx(html: string): string {
+  let missingSrc = 0;
+  let unsupported = 0;
+  const out = html.replace(/<img\b([^>]*)>/gi, (full, inner: string) => {
+    const srcMatch = /\bsrc=["']([^"']*)["']/i.exec(inner);
+    const src = srcMatch?.[1]?.trim() ?? '';
+    if (!src || src === 'undefined') {
+      missingSrc += 1;
+      return '<span style="color:#555;font-size:10pt">[Image omitted for Word export]</span>';
+    }
+    const mimeOk = /^data:image\/(png|jpeg|pjpeg|jpg|gif|webp)(\b|;)/i.test(src);
+    const remoteOk = /^https?:\/\//i.test(src);
+    if (mimeOk || remoteOk) return full;
+    unsupported += 1;
+    return '<span style="color:#555;font-size:10pt">[Figure omitted — use PDF for full graphics]</span>';
+  });
+  if (missingSrc > 0 || unsupported > 0) {
+    console.warn(
+      `[DOCX] Replaced ${unsupported} unsupported and ${missingSrc} empty <img> tags for Word (WMF/SVG/etc. → use PDF for originals).`,
+    );
+  }
+  return out;
+}
+
 function injectDocxPageBreaks(html: string): string {
   let result = html
     // Replace inline page-break divs from build-markdown (PDF) with docx-compatible ones
@@ -91,37 +129,64 @@ export async function exportDOCX(session: SessionState): Promise<Buffer> {
 
   const mathCss = visuals?.equations?.enabled ? getMathCss() : '';
   const mathOverrides = visuals?.equations?.enabled ? PRINT_MATH_OVERRIDES : '';
+  const bodyClass = buildPrintBodyClasses({ ingestMode: !!session.ingestMode });
+  const ingestCss = session.ingestMode ? PRINT_CSS_INGEST_BOOK : '';
   const fullHtml = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <style>
 ${PRINT_CSS}
+${PRINT_CSS_LAYOUT_EXTENSIONS}
+${ingestCss}
 ${highlightCss}
 ${DOCX_COMPAT_CSS}
 ${mathCss}
 ${mathOverrides}
 </style>
 </head>
-<body>
+<body class="${bodyClass.replace(/"/g, '')}">
 ${bodyHtml}
 </body>
 </html>`;
 
   // Rasterize math and mermaid blocks to images for Word compatibility
   const needsRasterize = (visuals?.equations?.enabled || visuals?.mermaid?.enabled);
-  const docxHtml = needsRasterize
+  let docxHtml = needsRasterize
     ? await rasterizeVisualsForDocx(fullHtml, visuals?.mermaid?.enabled ?? false)
     : fullHtml;
+  docxHtml = sanitizeImagesForHtmlToDocx(docxHtml);
 
-  const docxBuffer: Buffer = await HTMLtoDOCX(docxHtml, null, {
-    table: { row: { cantSplit: true } },
-    footer: true,
-    pageNumber: true,
-    font: 'Georgia',
-    fontSize: 22,
-    title: session.structure?.title ?? session.topic,
-  });
+  const docxTimeoutMs = (() => {
+    const v = parseInt(process.env.DOCX_EXPORT_TIMEOUT_MS || '', 10);
+    return Number.isFinite(v) && v > 60_000 ? v : 900_000;
+  })();
+
+  console.log(
+    `[DOCX] Running html-to-docx (${Math.round(docxHtml.length / 1024)}KB HTML; timeout ${Math.round(docxTimeoutMs / 60000)} min). Large theses can take several minutes.`,
+  );
+
+  const docxBuffer: Buffer = await Promise.race([
+    HTMLtoDOCX(docxHtml, null, {
+      table: { row: { cantSplit: true } },
+      footer: true,
+      pageNumber: true,
+      font: 'Georgia',
+      fontSize: 22,
+      title: session.structure?.title ?? session.topic,
+    }) as Promise<Buffer>,
+    new Promise<Buffer>((_, reject) => {
+      setTimeout(
+        () =>
+          reject(
+            new Error(
+              `DOCX export timed out after ${docxTimeoutMs}ms. Set DOCX_EXPORT_TIMEOUT_MS or use --pdf-only to skip Word.`,
+            ),
+          ),
+        docxTimeoutMs,
+      );
+    }),
+  ]);
 
   console.log(
     `[DOCX] Export complete — ${Math.round(docxBuffer.length / 1024)}KB`,

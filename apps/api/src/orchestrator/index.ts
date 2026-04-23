@@ -16,6 +16,7 @@ import { generateCaseStudies } from './generate-case-study';
 import { generateGlossary } from './generate-glossary';
 import { generateBibliography } from './generate-bibliography';
 import { buildFinalMarkdown } from './build-markdown';
+import { applyOptionalFinalMarkdownWordTrim } from './final-markdown-trim';
 import { logPhase, logVerbose } from './debug';
 
 function touch(session: SessionState): void {
@@ -176,6 +177,7 @@ export async function orchestrate(session: SessionState): Promise<void> {
           touch(session);
 
           await throttle();
+          const sourceSlot = session.sourceSeed?.slots[unitIdx * SUBTOPICS_PER_UNIT + subIdx];
           const md = await retry(
             () =>
               generateSubtopic(
@@ -190,6 +192,7 @@ export async function orchestrate(session: SessionState): Promise<void> {
                   model: session.model,
                   isTechnical: session.isTechnical,
                   visuals: session.visuals,
+                  sourceSlot,
                 },
                 session
               ),
@@ -335,7 +338,7 @@ export async function orchestrate(session: SessionState): Promise<void> {
     session.phase = 'assembly';
     touch(session);
     logPhase(session.id, 'phase: assembly');
-    session.finalMarkdown = buildFinalMarkdown(session);
+    session.finalMarkdown = applyOptionalFinalMarkdownWordTrim(buildFinalMarkdown(session));
     touch(session);
     session.progress = 98;
 

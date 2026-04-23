@@ -1,55 +1,58 @@
 import type { SessionState } from '@/lib/types';
+import { isPremiumFullScaffolding } from '@/ingest/ingest-config';
 
 /**
- * Adds professional ebook scaffolding: preface, per-unit learning objectives, and unit recaps.
- * Does not remove or rewrite imported technical content (that is handled by polish when enabled).
+ * Optional ebook scaffolding: by default (minimal) only ensures arrays exist.
+ * Set `INGEST_PREMIUM_FULL=1` for legacy preface, per-unit section lists, and recap blocks.
  */
 export function applyPremiumIngest(session: SessionState): void {
   const structure = session.structure;
   if (!structure) return;
 
-  const displayTitle = structure.title.trim();
-  session.prefaceMarkdown = [
-    '## How to use this edition',
-    '',
-    `This ebook edition of **${displayTitle}** is organized into units with clear learning objectives,`,
-    'worked-style sections from your source material, and end-of-unit recap tables.',
-    '',
-    '- **Figures** from the original document are preserved where they were placed in the source.',
-    '- **Diagrams** use Mermaid in a few strategic overview spots so the digital layout stays crisp in PDF and Word.',
-    '',
-    '> Tip: use the table of contents links (in the exported PDF) to jump between units quickly.',
-    '',
-  ].join('\n');
-
   const n = structure.units.length;
   while (session.unitIntroductions.length < n) session.unitIntroductions.push(null);
   while (session.unitEndSummaries.length < n) session.unitEndSummaries.push(null);
 
+  if (!isPremiumFullScaffolding()) {
+    session.prefaceMarkdown = null;
+    for (let u = 0; u < n; u++) {
+      session.unitIntroductions[u] = null;
+      session.unitEndSummaries[u] = null;
+    }
+    return;
+  }
+
+  const displayTitle = structure.title.trim();
+  session.prefaceMarkdown = [
+    '## About this edition',
+    '',
+    `**${displayTitle}** follows the headings and order from your source file. Figures and tables stay where they appeared in the import.`,
+    '',
+    'Use the PDF table of contents (clickable links) to move between chapters.',
+    '',
+  ].join('\n');
+
   for (let u = 0; u < n; u++) {
     const unit = structure.units[u]!;
     const subs = unit.subtopics.filter(Boolean).slice(0, 14);
-    const bullets = subs
-      .map((t) => `- **${t}**: master the definitions, typical assumptions, and common solution patterns.`)
-      .join('\n');
+    const bullets = subs.map((t) => `- ${t}`).join('\n');
 
     session.unitIntroductions[u] = [
-      `## Learning objectives - Unit ${u + 1}: ${unit.unitTitle}`,
+      `## Part ${u + 1} — ${unit.unitTitle}`,
       '',
-      'By the end of this unit you should be able to:',
+      'Sections in this unit:',
       '',
-      bullets || '- Navigate the core material and connect it to the practice problems that follow.',
+      bullets || '- (see body below)',
       '',
     ].join('\n');
 
-    const coreRow = (subs.slice(0, 4).join('; ') || 'Foundational concepts from this unit.').replace(/\|/g, '/');
+    const recapLines = subs.slice(0, 10).map((t) => `- ${t}`);
     session.unitEndSummaries[u] = [
-      `## Unit ${u + 1} recap - ${unit.unitTitle}`,
+      `## Part ${u + 1} recap — ${unit.unitTitle}`,
       '',
-      '| Theme | What to carry forward |',
-      '| --- | --- |',
-      `| Core ideas | ${coreRow} |`,
-      '| Study approach | Revisit any section where steps felt fast, then rework one representative problem end-to-end. |',
+      'Section checklist:',
+      '',
+      recapLines.join('\n') || '- Review the unit body above.',
       '',
     ].join('\n');
   }
@@ -57,7 +60,7 @@ export function applyPremiumIngest(session: SessionState): void {
 
 export function looksTechnicalForIngest(title: string, filePath: string): boolean {
   const s = `${title} ${filePath}`.toLowerCase();
-  return /math|structural|statics|dynamics|beam|truss|load|moment|shear|deflection|matrix|calculus|algebra|vector|tensor|physics|chemistry|engineering|analysis|mechanics|stress|strain/i.test(
+  return /math|structural|statics|dynamics|beam|truss|load|moment|shear|deflection|matrix|calculus|algebra|vector|tensor|physics|chemistry|engineering|analysis|mechanics|stress|strain|hydraulic|hydrology|irrigation|evapotranspiration|penman|monteith|manning|weir|canal|catchment|flood|crop|agricult|soil\s+moisture|water\s+balance|pipeline|water\s+supply|reservoir|distribution\s+system|treatment\s+plant|flow\s+rate|final\s+year|thesis|dissertation|design\s+project/i.test(
     s,
   );
 }

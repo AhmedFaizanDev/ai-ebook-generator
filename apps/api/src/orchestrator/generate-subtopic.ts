@@ -18,11 +18,14 @@ export async function generateSubtopic(
   const sectionId = `${ctx.unitIndex + 1}.${ctx.subtopicIndex + 1}`;
 
   const label = `subtopic U${ctx.unitIndex + 1}/S${ctx.subtopicIndex + 1}`;
+  const imgN = ctx.sourceSlot?.imageLines?.length ?? 0;
+  const eqN = ctx.sourceSlot?.equations?.length ?? 0;
+  const maxTokens = imgN > 0 || eqN > 12 ? 2400 : 1800;
   const result = await callLLM({
     model: ctx.model,
     systemPrompt: buildSystemPrompt(session.isTechnical, visuals),
     userPrompt,
-    maxTokens: 1800,
+    maxTokens,
     temperature: 0.4,
     callLabel: label,
     bookTitle: session.topic,
@@ -50,7 +53,7 @@ export async function generateSubtopic(
         model: ctx.model,
         systemPrompt: buildSystemPrompt(session.isTechnical, visuals),
         userPrompt: retryPrompt,
-        maxTokens: 1800,
+        maxTokens,
         temperature: 0.4,
         callLabel: `${label} visual-retry`,
         bookTitle: session.topic,
