@@ -1,5 +1,6 @@
 import { SessionState } from '@/lib/types';
-import { UNIT_COUNT, SUBTOPICS_PER_UNIT, TOTAL_SUBTOPICS, MIN_CALL_INTERVAL_MS, LLM_CONCURRENCY } from '@/lib/config';
+import { MIN_CALL_INTERVAL_MS, LLM_CONCURRENCY } from '@/lib/config';
+import { computeWordTargets, DEFAULT_SUBTOPIC_BAND } from '@/lib/word-budget';
 import { checkLimits } from '@/lib/counters';
 import { saveSession } from '@/lib/session-store';
 import { retry } from './retry';
@@ -56,25 +57,33 @@ async function runBatch<T>(tasks: (() => Promise<T>)[], concurrency: number): Pr
 
 function isStructureComplete(session: SessionState): boolean {
   const s = session.structure;
-  if (!s || !s.units || s.units.length < UNIT_COUNT) return false;
-  for (let i = 0; i < UNIT_COUNT; i++) {
-    const u = s.units[i];
-    if (!u || !u.subtopics || u.subtopics.length < SUBTOPICS_PER_UNIT) return false;
+  if (!s || !Array.isArray(s.units) || s.units.length === 0) return false;
+  for (const u of s.units) {
+    if (!u || !Array.isArray(u.subtopics) || u.subtopics.length === 0) return false;
+    if (typeof u.unitTitle !== 'string' || u.unitTitle.trim().length === 0) return false;
   }
   return true;
 }
 
 function isUnitComplete(session: SessionState, unitIdx: number): boolean {
   const unit = session.structure?.units[unitIdx];
-  if (!unit || unit.subtopics.length < SUBTOPICS_PER_UNIT) return false;
+  if (!unit || unit.subtopics.length === 0) return false;
   if (!session.unitIntroductions[unitIdx]) return false;
   if (session.unitSummaries.length <= unitIdx) return false;
   if (!session.unitEndSummaries[unitIdx]) return false;
   if (!session.unitExercises[unitIdx]) return false;
-  for (let s = 0; s < SUBTOPICS_PER_UNIT; s++) {
+  for (let s = 0; s < unit.subtopics.length; s++) {
     if (!session.subtopicMarkdowns.get(`u${unitIdx}-s${s}`)) return false;
   }
   return true;
+}
+
+/** Total subtopics across all units in the current structure (1 if not yet built, to avoid div-by-zero). */
+function totalSubtopicsOf(session: SessionState): number {
+  const units = session.structure?.units ?? [];
+  let n = 0;
+  for (const u of units) n += u.subtopics?.length ?? 0;
+  return Math.max(1, n);
 }
 
 function isPostUnitsComplete(session: SessionState): boolean {
@@ -111,8 +120,24 @@ export async function orchestrate(session: SessionState): Promise<void> {
       logPhase(session.id, 'resume: structure already complete, skipping');
     }
 
-    if (!session.structure || session.structure.units.length < UNIT_COUNT) {
-      throw new Error(`Structure invalid: expected ${UNIT_COUNT} units, got ${session.structure?.units.length ?? 0}`);
+    if (!isStructureComplete(session) || !session.structure) {
+      throw new Error(`Structure invalid: ${session.structure?.units.length ?? 0} unit(s), some without subtopics`);
+    }
+
+    // Ensure word-budget targets exist for any pre-supplied structure (CSV-driven path) and
+    // for resumed sessions persisted before this column was added.
+    if (!session.wordTargets) {
+      session.wordTargets = computeWordTargets(session.structure);
+    }
+
+    const unitCount = session.structure.units.length;
+    const totalSubs = totalSubtopicsOf(session);
+    let completedSubs = 0;
+    for (let u = 0; u < unitCount; u++) {
+      const unit = session.structure.units[u];
+      for (let s = 0; s < unit.subtopics.length; s++) {
+        if (session.subtopicMarkdowns.get(`u${u}-s${s}`)) completedSubs++;
+      }
     }
 
     // Phase 1b: Preface (skip if already present for resume)
@@ -133,21 +158,22 @@ export async function orchestrate(session: SessionState): Promise<void> {
     }
 
     // Phase 2: Units (skip each unit if already complete for resume)
-    for (let unitIdx = 0; unitIdx < UNIT_COUNT; unitIdx++) {
+    for (let unitIdx = 0; unitIdx < unitCount; unitIdx++) {
       const unit = session.structure.units[unitIdx];
-      if (!unit || unit.subtopics.length < SUBTOPICS_PER_UNIT) {
-        throw new Error(`Unit ${unitIdx + 1} invalid: expected ${SUBTOPICS_PER_UNIT} subtopics, got ${unit?.subtopics.length ?? 0}`);
+      if (!unit || unit.subtopics.length === 0) {
+        throw new Error(`Unit ${unitIdx + 1} invalid: 0 subtopics`);
       }
+      const unitSubCount = unit.subtopics.length;
 
       if (isUnitComplete(session, unitIdx)) {
-        logPhase(session.id, `resume: unit ${unitIdx + 1}/${UNIT_COUNT} already complete, skipping`);
+        logPhase(session.id, `resume: unit ${unitIdx + 1}/${unitCount} already complete, skipping`);
         continue;
       }
 
       session.currentUnit = unitIdx + 1;
       session.phase = `unit-${unitIdx + 1}`;
       touch(session);
-      logPhase(session.id, `unit ${unitIdx + 1}/${UNIT_COUNT} started`);
+      logPhase(session.id, `unit ${unitIdx + 1}/${unitCount} started`);
       session.microSummaries[unitIdx] = [];
 
       const prevUnitSummary = unitIdx > 0
@@ -157,7 +183,7 @@ export async function orchestrate(session: SessionState): Promise<void> {
       // 2a: Unit Introduction + all subtopics in parallel
       logPhase(session.id, `unit ${unitIdx + 1} intro + subtopics (parallel)`);
 
-      const microResults: (string | null)[] = new Array(SUBTOPICS_PER_UNIT).fill(null);
+      const microResults: (string | null)[] = new Array(unitSubCount).fill(null);
 
       const introTask = async () => {
         await throttle();
@@ -170,10 +196,12 @@ export async function orchestrate(session: SessionState): Promise<void> {
         checkLimits(session);
       };
 
-      const subtopicTasks = Array.from({ length: SUBTOPICS_PER_UNIT }, (_, subIdx) => {
+      const subtopicTasks = Array.from({ length: unitSubCount }, (_, subIdx) => {
         return async () => {
           session.currentSubtopic = subIdx + 1;
           touch(session);
+
+          const targetWords = session.wordTargets?.perSubtopic[unitIdx]?.[subIdx] ?? DEFAULT_SUBTOPIC_BAND;
 
           await throttle();
           const md = await retry(
@@ -190,6 +218,9 @@ export async function orchestrate(session: SessionState): Promise<void> {
                   model: session.model,
                   isTechnical: session.isTechnical,
                   visuals: session.visuals,
+                  targetWords,
+                  unitCount,
+                  unitSubtopicCount: unitSubCount,
                 },
                 session
               ),
@@ -211,9 +242,10 @@ export async function orchestrate(session: SessionState): Promise<void> {
           microResults[subIdx] = micro;
           touch(session);
 
-          session.progress = 3 + ((unitIdx * SUBTOPICS_PER_UNIT + subIdx + 1) / TOTAL_SUBTOPICS) * 72;
+          completedSubs++;
+          session.progress = 3 + (completedSubs / totalSubs) * 72;
           checkLimits(session);
-          logVerbose(session.id, `unit ${unitIdx + 1} subtopic ${subIdx + 1}/${SUBTOPICS_PER_UNIT} done`, {
+          logVerbose(session.id, `unit ${unitIdx + 1} subtopic ${subIdx + 1}/${unitSubCount} done`, {
             callCount: session.callCount,
             tokenCount: session.tokenCount,
           });
@@ -228,7 +260,7 @@ export async function orchestrate(session: SessionState): Promise<void> {
 
       // Build unitMd from stored subtopics (order guaranteed by map keys)
       let unitMd = '';
-      for (let s = 0; s < SUBTOPICS_PER_UNIT; s++) {
+      for (let s = 0; s < unitSubCount; s++) {
         const md = session.subtopicMarkdowns.get(`u${unitIdx}-s${s}`);
         if (md) unitMd += md + '\n\n';
       }
@@ -275,7 +307,7 @@ export async function orchestrate(session: SessionState): Promise<void> {
       touch(session);
       checkLimits(session);
 
-      logPhase(session.id, `unit ${unitIdx + 1}/${UNIT_COUNT} done`, { callCount: session.callCount });
+      logPhase(session.id, `unit ${unitIdx + 1}/${unitCount} done`, { callCount: session.callCount });
       saveSession(session);
 
       session.microSummaries[unitIdx] = null;

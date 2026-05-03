@@ -344,6 +344,15 @@ a {
   list-style: none !important;
   list-style-type: none !important;
 }
+/* TOC uses <p> nodes; override global justified paragraphs so word-spacing stays even. */
+.toc .toc-list p,
+.toc p {
+  text-align: left !important;
+  text-justify: none;
+  word-spacing: normal;
+  hyphens: none;
+  -webkit-hyphens: none;
+}
 
 /* --- Math (KaTeX) --- */
 .math-display {

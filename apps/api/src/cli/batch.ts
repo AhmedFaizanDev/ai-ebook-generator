@@ -39,8 +39,10 @@ import {
 import { getDriveClient } from '@/drive/auth';
 import { loadSessionById, deletePersistedSession } from '@/lib/session-store';
 import { isTechnicalTopic } from '@/lib/topic-classifier';
-import type { SessionState, VisualConfig } from '@/lib/types';
+import type { SessionState, VisualConfig, UnitStructure, BookStructure } from '@/lib/types';
 import { DEFAULT_VISUAL_CONFIG } from '@/lib/types';
+import { parseSyllabusOutline } from '@/lib/syllabus-parser';
+import { computeWordTargets } from '@/lib/word-budget';
 
 const SESSIONS_DIR = path.resolve(process.cwd(), '.sessions');
 const PROGRESS_FILE = process.env.BATCH_PROGRESS_FILE
@@ -130,9 +132,28 @@ interface BatchRow {
   isTechnical?: boolean;
   /** Per-book visual config overrides (equations / mermaid). */
   visuals?: Partial<VisualConfig>;
+  /** Pre-parsed Units/Subtopics from the CSV `syllabus` (or legacy `keywords`) column. */
+  outline?: UnitStructure[];
 }
 
-function createBatchSession(topic: string, author?: string, isbn?: string, stableId?: string, isTechnicalOverride?: boolean, visualsOverride?: Partial<VisualConfig>): SessionState {
+function buildStructureFromOutline(title: string, outline: UnitStructure[]): BookStructure {
+  return {
+    title,
+    units: outline.map((u) => ({ unitTitle: u.unitTitle, subtopics: [...u.subtopics] })),
+    capstoneTopics: [],
+    caseStudyTopics: [],
+  };
+}
+
+function createBatchSession(
+  topic: string,
+  author?: string,
+  isbn?: string,
+  stableId?: string,
+  isTechnicalOverride?: boolean,
+  visualsOverride?: Partial<VisualConfig>,
+  outline?: UnitStructure[],
+): SessionState {
   const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
   const isTechnical = typeof isTechnicalOverride === 'boolean' ? isTechnicalOverride : isTechnicalTopic(topic);
   const visuals: VisualConfig = {
@@ -141,6 +162,8 @@ function createBatchSession(topic: string, author?: string, isbn?: string, stabl
     equations: { ...DEFAULT_VISUAL_CONFIG.equations, ...visualsOverride?.equations },
     mermaid: { ...DEFAULT_VISUAL_CONFIG.mermaid, ...visualsOverride?.mermaid },
   };
+  const structure = outline && outline.length > 0 ? buildStructureFromOutline(topic, outline) : null;
+  const wordTargets = structure ? computeWordTargets(structure) : undefined;
   return {
     id: stableId ?? crypto.randomUUID(),
     status: 'queued',
@@ -154,7 +177,7 @@ function createBatchSession(topic: string, author?: string, isbn?: string, stabl
     progress: 0,
     currentUnit: 0,
     currentSubtopic: 0,
-    structure: null,
+    structure,
     unitMarkdowns: [],
     microSummaries: [],
     unitSummaries: [],
@@ -176,6 +199,7 @@ function createBatchSession(topic: string, author?: string, isbn?: string, stabl
     subtopicMarkdowns: new Map(),
     subtopicVersions: new Map(),
     editCount: 0,
+    wordTargets,
   };
 }
 
@@ -186,6 +210,7 @@ function getOrCreateSessionForBook(
   isbn?: string,
   isTechnicalOverride?: boolean,
   visualsOverride?: Partial<VisualConfig>,
+  outline?: UnitStructure[],
 ): { session: SessionState; resumed: boolean } {
   const sid = stableSessionId(title);
   const existing = loadSessionById(sid);
@@ -211,9 +236,15 @@ function getOrCreateSessionForBook(
         ...(visualsOverride?.mermaid ?? {}),
       },
     };
+    // Always re-apply CSV outline + budget so the source of truth is the current CSV row,
+    // even if the persisted session pre-dates this column or the outline changed.
+    if (outline && outline.length > 0) {
+      existing.structure = buildStructureFromOutline(title, outline);
+      existing.wordTargets = computeWordTargets(existing.structure);
+    }
     return { session: existing, resumed: true };
   }
-  const session = createBatchSession(title, author, isbn, sid, isTechnicalOverride, visualsOverride);
+  const session = createBatchSession(title, author, isbn, sid, isTechnicalOverride, visualsOverride, outline);
   return { session, resumed: false };
 }
 
@@ -276,6 +307,24 @@ function parseVisualsColumns(equationsRaw: string, mermaidRaw: string): Partial<
 }
 
 /**
+ * Parse the syllabus column into an Outline, with logging on failure. Returns undefined when
+ * the cell is missing or unparseable; caller decides whether to skip the row.
+ */
+function tryParseOutline(title: string, syllabusRaw: string): UnitStructure[] | undefined {
+  const text = syllabusRaw?.trim();
+  if (!text) return undefined;
+  try {
+    const outline = parseSyllabusOutline(text);
+    if (outline.length === 0) return undefined;
+    return outline;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[BATCH] Could not parse syllabus for "${title}": ${msg}`);
+    return undefined;
+  }
+}
+
+/**
  * ISBN must contain digits. Rejects common CSV mistakes (e.g. "technical" or "true"
  * placed in the isbn column when a comma is missing).
  */
@@ -331,6 +380,8 @@ async function readRowsFromExcel(filePath: string): Promise<BatchRow[]> {
     const equationsRaw = getCell(row, 'equations') || getCell(row, 'math');
     const mermaidRaw = getCell(row, 'mermaid') || getCell(row, 'diagrams');
     const visuals = parseVisualsColumns(equationsRaw, mermaidRaw);
+    const syllabusRaw = getCell(row, 'syllabus') || getCell(row, 'keywords');
+    const outline = tryParseOutline(title, syllabusRaw);
     rows.push({
       title,
       author: authorRaw.length > 0 ? authorRaw : undefined,
@@ -338,6 +389,7 @@ async function readRowsFromExcel(filePath: string): Promise<BatchRow[]> {
       domain: domainRaw.length > 0 ? domainRaw : undefined,
       isTechnical: isTechnical,
       visuals,
+      outline,
     });
   });
   return rows;
@@ -377,6 +429,8 @@ function readRowsFromCsv(filePath: string): BatchRow[] {
     const equationsRaw = getCol(record, 'equations', 'math');
     const mermaidRaw = getCol(record, 'mermaid', 'diagrams');
     const visuals = parseVisualsColumns(equationsRaw, mermaidRaw);
+    const syllabusRaw = getCol(record, 'syllabus', 'keywords');
+    const outline = tryParseOutline(title, syllabusRaw);
     rows.push({
       title,
       author: authorRaw.length > 0 ? authorRaw : undefined,
@@ -384,6 +438,7 @@ function readRowsFromCsv(filePath: string): BatchRow[] {
       domain: domainRaw.length > 0 ? domainRaw : undefined,
       isTechnical,
       visuals,
+      outline,
     });
   }
   return rows;
@@ -408,16 +463,24 @@ async function processBook(
   folders?: UploadFolders,
   isTechnicalOverride?: boolean,
   visualsOverride?: Partial<VisualConfig>,
+  outline?: UnitStructure[],
 ): Promise<void> {
   const bookStartMs = Date.now();
   const mem = process.memoryUsage();
   console.log(`[BATCH] (${index + 1}/${total}) Generating: "${title}" | heap=${Math.round(mem.heapUsed / 1024 / 1024)}MB`);
 
-  const { session, resumed } = getOrCreateSessionForBook(title, author, isbn, isTechnicalOverride, visualsOverride);
+  const { session, resumed } = getOrCreateSessionForBook(title, author, isbn, isTechnicalOverride, visualsOverride, outline);
   session.batchIndex = index + 1;
   session.batchTotal = total;
   if (resumed) {
     console.log(`[BATCH] Resuming from checkpoint for "${title}" (session ${session.id})`);
+  }
+  if (session.structure && session.wordTargets) {
+    const totalSubs = session.structure.units.reduce((n, u) => n + u.subtopics.length, 0);
+    console.log(
+      `[BATCH] CSV outline: ${session.structure.units.length} units, ${totalSubs} subtopics; ` +
+      `target ~${session.wordTargets.totalSubtopicCenter.toLocaleString()} subtopic words`,
+    );
   }
 
   try {
@@ -501,15 +564,31 @@ async function main(): Promise<void> {
 
   // Dedupe by sanitized filename (titles that normalize to same output file)
   const seenFilename = new Set<string>();
-  const rows: BatchRow[] = [];
+  const dedupedRows: BatchRow[] = [];
   for (const r of rowsByTitle) {
     const fn = sanitizeFileName(r.title);
     if (!seenFilename.has(fn)) {
       seenFilename.add(fn);
-      rows.push(r);
+      dedupedRows.push(r);
     } else {
       console.warn(`[BATCH] Skipping duplicate filename (maps to same output): "${r.title}"`);
     }
+  }
+
+  // Skip rows with no parseable syllabus outline — CSV is the single source of truth
+  // for unit/topic structure on the batch path; we no longer fall back to AI structure.
+  const rows: BatchRow[] = [];
+  let skippedNoOutline = 0;
+  for (const r of dedupedRows) {
+    if (!r.outline || r.outline.length === 0) {
+      console.warn(`[BATCH] Skipping row with no parseable syllabus: "${r.title}"`);
+      skippedNoOutline++;
+      continue;
+    }
+    rows.push(r);
+  }
+  if (skippedNoOutline > 0) {
+    console.warn(`[BATCH] Skipped ${skippedNoOutline} row(s) with no parseable syllabus`);
   }
 
   const titles = rows.map((r) => r.title);
@@ -648,7 +727,7 @@ async function main(): Promise<void> {
       }
 
       try {
-        await processBook(row.title, globalIdx, titles.length, row.author, row.isbn, folders, row.isTechnical, row.visuals);
+        await processBook(row.title, globalIdx, titles.length, row.author, row.isbn, folders, row.isTechnical, row.visuals, row.outline);
         progress.completed.push(row.title);
         const failedIdx = progress.failed.indexOf(row.title);
         if (failedIdx !== -1) progress.failed.splice(failedIdx, 1);

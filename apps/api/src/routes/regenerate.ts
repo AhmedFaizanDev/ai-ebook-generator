@@ -66,6 +66,9 @@ export default function registerRegenerate(router: Router): void {
           model: session.model,
           isTechnical: session.isTechnical,
           visuals: session.visuals,
+          targetWords: session.wordTargets?.perSubtopic[unitIdx]?.[subtopicIdx],
+          unitCount: session.structure.units.length,
+          unitSubtopicCount: unit.subtopics.length,
         },
         session,
       );

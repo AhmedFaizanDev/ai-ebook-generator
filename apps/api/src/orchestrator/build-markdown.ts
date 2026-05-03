@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { SessionState } from '@/lib/types';
+import { normalizeTitleSpacing } from '@/lib/title-spacing';
 
 /** Ensure Option A is never on the same line as the question (MCQ formatting). */
 function ensureNewlineBeforeOptionA(md: string): string {
@@ -415,12 +416,14 @@ function assembleSegments(session: SessionState, getSubtopic: (u: number, s: num
   for (let u = 0; u < structure.units.length; u++) {
     const unitNum = u + 1;
     const unit = structure.units[u];
+    const unitTitleDisp = normalizeTitleSpacing(unit.unitTitle);
     const unitSlug = slugify(`unit-${unitNum}-${unit.unitTitle}`);
-    tocParts.push(`<p style="margin:0.35em 0;font-weight:bold;"><a href="#${unitSlug}">${escapeTocText(`Unit ${unitNum}: ${unit.unitTitle}`)}</a></p>`);
+    tocParts.push(`<p style="margin:0.35em 0;font-weight:bold;"><a href="#${unitSlug}">${escapeTocText(`Unit ${unitNum}: ${unitTitleDisp}`)}</a></p>`);
     for (let s = 0; s < unit.subtopics.length; s++) {
       const sub = unit.subtopics[s];
+      const subDisp = normalizeTitleSpacing(sub);
       const subSlug = slugify(`${unitNum}-${s + 1}-${sub}`);
-      tocParts.push(`<p style="margin:0.15em 0;padding-left:1.5em;font-size:10pt;"><a href="#${subSlug}">${escapeTocText(`${unitNum}.${s + 1} ${sub}`)}</a></p>`);
+      tocParts.push(`<p style="margin:0.15em 0;padding-left:1.5em;font-size:10pt;"><a href="#${subSlug}">${escapeTocText(`${unitNum}.${s + 1} ${subDisp}`)}</a></p>`);
     }
     tocParts.push(`<p style="margin:0.15em 0;padding-left:1.5em;font-size:10pt;"><a href="#${slugify(`summary-${unitNum}`)}">Summary</a></p>`);
     tocParts.push(`<p style="margin:0.15em 0;padding-left:1.5em;font-size:10pt;"><a href="#${slugify(`exercises-${unitNum}`)}">Exercises</a></p>`);
@@ -435,7 +438,7 @@ function assembleSegments(session: SessionState, getSubtopic: (u: number, s: num
   // 4. Unit content
   for (let u = 0; u < structure.units.length; u++) {
     const unit = structure.units[u];
-    const unitParts: string[] = [`# Unit ${u + 1}: ${unit.unitTitle}\n`];
+    const unitParts: string[] = [`# Unit ${u + 1}: ${normalizeTitleSpacing(unit.unitTitle)}\n`];
 
     const intro = session.unitIntroductions[u];
     if (intro) unitParts.push(cleanMd(intro));

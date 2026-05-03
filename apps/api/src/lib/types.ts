@@ -1,3 +1,5 @@
+import type { WordTargets, SubtopicWordTarget } from './word-budget';
+
 export interface VisualConfig {
   equations: { enabled: boolean };
   mermaid: { enabled: boolean };
@@ -80,6 +82,8 @@ export interface SessionState {
   subtopicMarkdowns: Map<string, string>;
   subtopicVersions: Map<string, string[]>;
   editCount: number;
+  /** Per-subtopic word allocation (CSV-driven batch flow). Optional for backwards compat / web flow. */
+  wordTargets?: WordTargets;
 }
 
 export interface SubtopicContext {
@@ -95,6 +99,12 @@ export interface SubtopicContext {
   isTechnical: boolean;
   /** Per-book visual rendering config for equations and diagrams. */
   visuals: VisualConfig;
+  /** Target word band for this subtopic; falls back to a default band when undefined. */
+  targetWords?: SubtopicWordTarget;
+  /** Total units in the book (for "Unit X/Y" labelling). Falls back to a generic label when undefined. */
+  unitCount?: number;
+  /** Total subtopics in the current unit (for "Subtopic X/Y" and position hint). */
+  unitSubtopicCount?: number;
 }
 
 export interface ContentBlockError {

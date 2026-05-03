@@ -41,3 +41,6 @@ apps/api/.sessions/
 
 # batch progress (completed/failed tracking)
 apps/api/.batch-progress.json
+
+# large local batch CSV extracts (keep out of repo)
+apps/api/may-set-1-batch-*.csv

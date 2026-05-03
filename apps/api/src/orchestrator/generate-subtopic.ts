@@ -44,7 +44,7 @@ export async function generateSubtopic(
     console.warn(`[subtopic] Validation failed for ${label} (${validation.errors.length} content errors, table=${validation.hasTable}). Attempting auto-fix retry...`);
 
     try {
-      const retryPrompt = buildSubtopicPrompt(ctx) + '\n\n' + buildVisualRetryPrompt(ctx.subtopicTitle, session.isTechnical, visuals, validation.errors);
+      const retryPrompt = buildSubtopicPrompt(ctx) + '\n\n' + buildVisualRetryPrompt(ctx.subtopicTitle, session.isTechnical, visuals, validation.errors, ctx.targetWords);
 
       const retryResult = await callLLM({
         model: ctx.model,

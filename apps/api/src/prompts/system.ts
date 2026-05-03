@@ -19,7 +19,7 @@ const COMMON_TAIL = `Use ordered lists (1. 2. 3.) for sequential steps, procedur
 Include worked illustrative examples before posing analytical questions.
 No filler, greetings, or meta-commentary. Every sentence must advance understanding. Do NOT include a conclusion section in subtopics — each unit has its own summary. Do NOT use the heading "Summary" in the middle of a unit (it is reserved for end-of-unit only); use "Conclusion" or "Key Takeaways" for mid-chapter wrap-ups. Do not generate a full inner title page or duplicate book title within a unit.
 Preserve consistent formatting and structure throughout; avoid large blocks that break layout.
-Subtopic: 1100–1300 words. Capstone/case study: 1600–1900 words. Never exceed upper bound.`;
+Subtopics: follow the per-call word band given in the user prompt. Capstone/case study: 1600–1900 words. Never exceed the upper bound stated in the user prompt.`;
 
 function buildTechnicalPrompt(visuals: VisualConfig): string {
   return `You are a senior academic textbook author. Output raw Markdown only.

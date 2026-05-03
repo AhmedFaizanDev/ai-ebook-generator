@@ -1,11 +1,13 @@
 import type { VisualConfig, ContentBlockError } from '@/lib/types';
 import { DEFAULT_VISUAL_CONFIG } from '@/lib/types';
+import { DEFAULT_SUBTOPIC_BAND, type SubtopicWordTarget } from '@/lib/word-budget';
 
 export function buildVisualRetryPrompt(
   subtopicTitle: string,
   isTechnical: boolean = true,
   visuals: VisualConfig = DEFAULT_VISUAL_CONFIG,
   errors: ContentBlockError[] = [],
+  targetWords: SubtopicWordTarget = DEFAULT_SUBTOPIC_BAND,
 ): string {
   const codeBlockInstruction = isTechnical
     ? 'Use code blocks only for programming/software/CS topics — not for finance, economics, or business analysis (use prose and tables). Do not use raw HTML or ```html for diagrams. Close all code blocks with ```.'
@@ -23,5 +25,5 @@ export function buildVisualRetryPrompt(
     ? '\n\nFix these specific issues from the previous attempt:\n' + errors.map((e, i) => `${i + 1}. [${e.type}] ${e.message}`).join('\n')
     : '';
 
-  return `Rewrite this subtopic in 1100–1300 words. Include a ### subsection (descriptive heading, no numbering) containing a GFM table that substantively compares, contrasts, or maps a ${isTechnical ? 'technical' : 'conceptual'} relationship from this section's content. The visual must carry analytical value — not merely list items. ${mermaidRule} Use tables only for data/comparison; do not put long prose in tables. ${codeBlockInstruction} Do NOT use the heading "Summary" (reserved for end-of-unit). Start with ## ${subtopicTitle}. Do NOT include a conclusion — the unit has its own summary. ${mathRule} Do NOT exceed 1300 words.${errorFixes}`;
+  return `Rewrite this subtopic in ${targetWords.min}–${targetWords.max} words. Include at least 3 distinct ### sub-sections (descriptive headings, no numbering). One of those ### sub-sections must contain a GFM table that substantively compares, contrasts, or maps a ${isTechnical ? 'technical' : 'conceptual'} relationship from this section's content. The visual must carry analytical value — not merely list items. ${mermaidRule} Use tables only for data/comparison; do not put long prose in tables. ${codeBlockInstruction} Do NOT use the heading "Summary" (reserved for end-of-unit). Start with ## ${subtopicTitle}. Do NOT include a conclusion — the unit has its own summary. ${mathRule} Do NOT exceed ${targetWords.max} words.${errorFixes}`;
 }

@@ -1,34 +1,56 @@
 import { Router, Request, Response } from 'express';
 import { getSession } from '@/lib/session-store';
 import { TOTAL_SUBTOPICS, SUBTOPICS_PER_UNIT, UNIT_COUNT } from '@/lib/config';
-import { ProgressEvent } from '@/lib/types';
+import { ProgressEvent, SessionState, BookStructure } from '@/lib/types';
 
-function computeGeneratedCount(session: {
-  currentUnit: number;
-  currentSubtopic: number;
-  unitMarkdowns: (string | null)[];
-  status: string;
-}): number {
+/**
+ * Returns the number of subtopics whose generation has finished. When a real
+ * `BookStructure` is present (CSV-driven batch or completed AI-driven web flow),
+ * we walk the actual per-unit subtopic counts. We fall back to the legacy fixed
+ * 10×6 math only when no structure is available yet (early in the web flow).
+ */
+function computeGeneratedCount(session: Pick<SessionState,
+  'currentUnit' | 'currentSubtopic' | 'unitMarkdowns' | 'status' | 'structure'
+>): number {
+  const structure = session.structure ?? null;
+  const totalSubs = computeTotalSubtopics(structure);
+
   if (
     session.status === 'completed' ||
     session.status === 'downloaded' ||
     session.status === 'markdown_ready' ||
     session.status === 'exporting_pdf'
-  ) return TOTAL_SUBTOPICS;
+  ) return totalSubs;
 
   let count = 0;
   for (let u = 0; u < session.unitMarkdowns.length; u++) {
     if (session.unitMarkdowns[u] != null) {
-      count += SUBTOPICS_PER_UNIT;
+      count += subtopicCountForUnit(structure, u);
     }
   }
 
   const inProgressUnit = session.currentUnit - 1;
-  if (inProgressUnit >= 0 && inProgressUnit < UNIT_COUNT && session.unitMarkdowns[inProgressUnit] == null) {
+  const unitCount = structure?.units.length ?? UNIT_COUNT;
+  if (inProgressUnit >= 0 && inProgressUnit < unitCount && session.unitMarkdowns[inProgressUnit] == null) {
     count += Math.max(0, session.currentSubtopic - 1);
   }
 
-  return Math.min(count, TOTAL_SUBTOPICS);
+  return Math.min(count, totalSubs);
+}
+
+function computeTotalSubtopics(structure: BookStructure | null): number {
+  if (!structure || !Array.isArray(structure.units) || structure.units.length === 0) {
+    return TOTAL_SUBTOPICS;
+  }
+  let n = 0;
+  for (const u of structure.units) n += u.subtopics?.length ?? 0;
+  return Math.max(1, n);
+}
+
+function subtopicCountForUnit(structure: BookStructure | null, unitIdx: number): number {
+  const u = structure?.units[unitIdx];
+  if (u && Array.isArray(u.subtopics) && u.subtopics.length > 0) return u.subtopics.length;
+  return SUBTOPICS_PER_UNIT;
 }
 
 export default function registerProgress(router: Router): void {
