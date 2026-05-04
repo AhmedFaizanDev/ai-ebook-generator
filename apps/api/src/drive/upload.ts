@@ -179,24 +179,28 @@ export interface UploadFolders {
 }
 
 /**
- * Check if both PDF and DOCX for a book already exist in the configured Drive folders.
- * Used by batch CLI to skip generation when output already exists (duplicate prevention).
+ * Check if batch outputs already exist in Drive (duplicate prevention).
  * If folders is provided (domain-based), use those; else use GDRIVE_PDF_FOLDER_ID / GDRIVE_DOC_FOLDER_ID.
+ * When requireDocx is false (BATCH_EXPORT_DOCX=false), only the PDF must exist to treat the book as already uploaded.
  */
 export async function bookAlreadyInDrive(
   pdfFileName: string,
   docxFileName: string,
   folders?: UploadFolders,
+  options?: { requireDocx?: boolean },
 ): Promise<boolean> {
+  const requireDocx = options?.requireDocx !== false;
   const pdfFolderId = folders?.pdfFolderId ?? process.env.GDRIVE_PDF_FOLDER_ID;
   const docFolderId = folders?.docFolderId ?? process.env.GDRIVE_DOC_FOLDER_ID;
-  if (!pdfFolderId || !docFolderId) return false;
+  if (!pdfFolderId) return false;
+  if (requireDocx && !docFolderId) return false;
 
-  const [pdfExists, docxExists] = await Promise.all([
-    fileExistsInDrive(pdfFileName, pdfFolderId),
-    fileExistsInDrive(docxFileName, docFolderId),
-  ]);
-  return pdfExists !== null && docxExists !== null;
+  const pdfExists = await fileExistsInDrive(pdfFileName, pdfFolderId);
+  if (pdfExists === null) return false;
+  if (!requireDocx) return true;
+
+  const docxExists = await fileExistsInDrive(docxFileName, docFolderId!);
+  return docxExists !== null;
 }
 
 export async function uploadPdfToDrive(

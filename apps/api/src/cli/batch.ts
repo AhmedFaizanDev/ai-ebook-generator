@@ -4,7 +4,7 @@
  *
  * Reads book titles from a CSV or XLSX file. Column A = title, column B = optional author (used on cover),
  * column C = optional ISBN (shown on copyright page). If author is missing, a random author from a fixed list is used. Then for each row:
- *   orchestrate → PDF → DOCX → upload to Google Drive
+ *   orchestrate → PDF → (optional DOCX) → upload to Google Drive (domain folders when configured)
  *
  * Features:
  *   - Idempotent job tracking: completed list = skip; existing session file = resume from checkpoint
@@ -68,6 +68,8 @@ const MAX_RETRY_ROUNDS = parseEnvInt('BATCH_MAX_RETRY_ROUNDS', 5, 1);
 const COOLDOWN_BETWEEN_ROUNDS_MS = parseEnvInt('BATCH_COOLDOWN_BETWEEN_ROUNDS_MS', 30_000, 0);
 /** Skip generation if PDF + DOCX already exist in Drive (duplicate prevention). Default: true. */
 const SKIP_IF_IN_DRIVE = process.env.BATCH_SKIP_IF_IN_DRIVE !== 'false';
+/** When false, skip Word export and DOCX upload; PDF still uses domain-based Drive folders. Default: true. */
+const EXPORT_DOCX = process.env.BATCH_EXPORT_DOCX !== 'false';
 
 // ---------------------------------------------------------------------------
 // Progress tracking (enables resume after crash)
@@ -503,12 +505,16 @@ async function processBook(
     }
     console.log(`[BATCH] (${index + 1}/${total}) PDF ready for "${title}" (${session.callCount} calls, ${session.tokenCount} tokens)`);
 
-    session.finalMarkdown = rebuildFinalMarkdown(session);
-    const docxBuffer = await exportDOCX(session);
-    console.log(`[BATCH] (${index + 1}/${total}) DOCX ready for "${title}"`);
-
     await uploadPdfToDrive(session.pdfBuffer, `${safeName}.pdf`, folders?.pdfFolderId);
-    await uploadDocxToDrive(docxBuffer, `${safeName}.docx`, folders?.docFolderId);
+
+    if (EXPORT_DOCX) {
+      session.finalMarkdown = rebuildFinalMarkdown(session);
+      const docxBuffer = await exportDOCX(session);
+      console.log(`[BATCH] (${index + 1}/${total}) DOCX ready for "${title}"`);
+      await uploadDocxToDrive(docxBuffer, `${safeName}.docx`, folders?.docFolderId);
+    } else {
+      console.log(`[BATCH] (${index + 1}/${total}) DOCX skipped (BATCH_EXPORT_DOCX=false)`);
+    }
 
     deletePersistedSession(session.id);
 
@@ -607,6 +613,7 @@ async function main(): Promise<void> {
   if (retrying.length > 0) {
     console.log(`[BATCH] Retrying ${retrying.length} previously failed title(s).`);
   }
+  console.log(`[BATCH] DOCX export: ${EXPORT_DOCX ? 'on' : 'off'} (set BATCH_EXPORT_DOCX=false to skip Word + DOCX upload only)`);
   console.log('');
 
   if (remainingRows.length === 0) {
@@ -640,16 +647,22 @@ async function main(): Promise<void> {
   } else {
     const pdfFolderId = process.env.GDRIVE_PDF_FOLDER_ID;
     const docFolderId = process.env.GDRIVE_DOC_FOLDER_ID;
-    if (!pdfFolderId || !docFolderId) {
+    if (!pdfFolderId) {
       console.error(
-        '[BATCH] Missing Drive config. Set either GDRIVE_EBOOKS_ROOT_ID (domain-based) or GDRIVE_PDF_FOLDER_ID and GDRIVE_DOC_FOLDER_ID in .env',
+        '[BATCH] Missing Drive config. Set GDRIVE_PDF_FOLDER_ID, or GDRIVE_EBOOKS_ROOT_ID for domain-based upload.',
       );
+      process.exit(1);
+    }
+    if (EXPORT_DOCX && !docFolderId) {
+      console.error('[BATCH] GDRIVE_DOC_FOLDER_ID is required when BATCH_EXPORT_DOCX is not false.');
       process.exit(1);
     }
     try {
       const drive = getDriveClient();
       await drive.files.get({ fileId: pdfFolderId, fields: 'id' });
-      await drive.files.get({ fileId: docFolderId, fields: 'id' });
+      if (EXPORT_DOCX && docFolderId) {
+        await drive.files.get({ fileId: docFolderId, fields: 'id' });
+      }
       console.log('[BATCH] Drive folders validated (legacy).');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -708,7 +721,9 @@ async function main(): Promise<void> {
         const docxName = `${safeName}.docx`;
         let alreadyInDrive = false;
         try {
-          alreadyInDrive = await bookAlreadyInDrive(pdfName, docxName, folders);
+          alreadyInDrive = await bookAlreadyInDrive(pdfName, docxName, folders, {
+            requireDocx: EXPORT_DOCX,
+          });
         } catch (driveErr) {
           const errMsg = driveErr instanceof Error ? driveErr.message : String(driveErr);
           console.error(`[BATCH] Drive check failed for "${row.title}" — ${errMsg}. Adding to failed; re-run after fixing connectivity.`);
