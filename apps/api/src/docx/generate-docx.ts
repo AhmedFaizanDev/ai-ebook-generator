@@ -1,7 +1,7 @@
 import { SessionState } from '@/lib/types';
 import { segmentsToHtml, markdownToHtml, getHighlightCss } from '@/pdf/markdown-to-html';
 import { buildSegments } from '@/orchestrator/build-markdown';
-import { PRINT_CSS, getMathCss, PRINT_MATH_OVERRIDES } from '@/pdf/html-template';
+import { PRINT_CSS, getMathCssForPdf, PRINT_MATH_OVERRIDES, getUnicodeFontLinkTags } from '@/pdf/html-template';
 import { auditExportHtml } from '@/pdf/export-preflight';
 import { getBrowser } from '@/pdf/browser-pool';
 
@@ -17,7 +17,7 @@ const DOCX_COMPAT_CSS = `
 table { border-collapse: collapse; width: 100%; margin: 0.8em 0; font-size: 10pt; }
 table th, table td { border: 1px solid #ccc; padding: 6px 10px; vertical-align: top; }
 table th { background: #f0f0f0; font-weight: bold; }
-pre { font-family: Consolas, "Courier New", monospace !important; font-size: 9pt !important;
+pre { font-family: "Noto Sans Mono", Consolas, "Courier New", "DejaVu Sans Mono", monospace !important; font-size: 9pt !important;
   white-space: pre-wrap !important; word-wrap: break-word !important; line-height: 1.4 !important;
   background: #f6f8fa !important; padding: 10px 14px !important; border-left: 3px solid #ccc !important; }
 pre code { background: transparent !important; font-size: inherit !important; }
@@ -34,7 +34,7 @@ function enhanceHtmlForDocx(html: string): string {
     if (/\bborder\s*=/i.test(rest)) return full;
     const after = rest ? ` ${rest}` : '';
     return `<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%;margin:0.8em 0;font-size:10pt"${after}>`;
-  }).replace(/<pre>/g, '<pre style="font-family:Consolas,\'Courier New\',monospace;font-size:9pt;background:#f6f8fa;padding:10px 14px;border-left:3px solid #ccc;white-space:pre-wrap;word-wrap:break-word;line-height:1.4">');
+  }).replace(/<pre>/g, '<pre style="font-family:\'Noto Sans Mono\',Consolas,\'Courier New\',\'DejaVu Sans Mono\',monospace;font-size:9pt;background:#f6f8fa;padding:10px 14px;border-left:3px solid #ccc;white-space:pre-wrap;word-wrap:break-word;line-height:1.4">');
 }
 
 /**
@@ -87,12 +87,13 @@ export async function exportDOCX(session: SessionState): Promise<Buffer> {
   bodyHtml = injectDocxPageBreaks(bodyHtml);
   const highlightCss = getHighlightCss();
 
-  const mathCss = visuals?.equations?.enabled ? getMathCss() : '';
+  const mathCss = visuals?.equations?.enabled ? getMathCssForPdf() : '';
   const mathOverrides = visuals?.equations?.enabled ? PRINT_MATH_OVERRIDES : '';
   const fullHtml = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+${getUnicodeFontLinkTags()}
 <style>
 ${PRINT_CSS}
 ${highlightCss}
@@ -116,7 +117,7 @@ ${bodyHtml}
     table: { row: { cantSplit: true } },
     footer: true,
     pageNumber: true,
-    font: 'Georgia',
+    font: 'Noto Serif',
     fontSize: 22,
     title: session.structure?.title ?? session.topic,
   });

@@ -1,3 +1,25 @@
+import fs from 'fs';
+import path from 'path';
+import { pathToFileURL } from 'node:url';
+
+/**
+ * Noto families cover most Unicode (math operators, letterlike symbols, extended Latin).
+ * Symbols families cover supplementary technical glyphs; injected in <head> for Chromium PDF.
+ * System fonts after Noto support offline / blocked-CDN fallbacks on Windows.
+ */
+export function getUnicodeFontLinkTags(): string {
+  return `<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Math&family=Noto+Sans+Mono:wght@400;700&family=Noto+Sans+Symbols&family=Noto+Sans+Symbols+2&family=Noto+Sans:ital,wght@0,400;0,700;1,400;1,700&family=Noto+Serif:ital,wght@0,400;0,700;1,400;1,700&display=swap" rel="stylesheet">`;
+}
+
+/**
+ * Per-glyph fallback: first font that has the codepoint wins (e.g. ∈, ⇔, ∀, double-struck letters).
+ * Keep math/symbols families before legacy serif so operators do not fall through to Georgia tofu.
+ */
+const BODY_FONT_STACK = `'Noto Serif', 'Noto Sans', 'Noto Sans Math', 'Noto Sans Symbols', 'Noto Sans Symbols 2', 'Segoe UI Symbol', 'Cambria Math', 'Segoe UI Historic', Georgia, 'Times New Roman', 'DejaVu Serif', 'Arial Unicode MS', serif`;
+const MONO_FONT_STACK = `'Noto Sans Mono', 'Consolas', 'Courier New', 'DejaVu Sans Mono', monospace`;
+
 export const PRINT_CSS = `
 @page {
   size: 210mm 297mm;
@@ -11,12 +33,16 @@ html, body {
   max-width: 100%;
   margin: 0;
   padding: 0;
+  font-family: ${BODY_FONT_STACK};
 }
 body {
-  font-family: 'Georgia', 'Times New Roman', serif;
   font-size: 11pt;
   line-height: 1.65;
   color: #1a1a1a;
+  text-rendering: optimizeLegibility;
+}
+.copyright-page, .cover-page, .toc, table, th, td, blockquote {
+  font-family: ${BODY_FONT_STACK};
 }
 h1 {
   page-break-before: always;
@@ -61,6 +87,7 @@ pre {
   padding: 10px 14px;
   border-radius: 4px;
   border-left: 3px solid #ccc;
+  font-family: ${MONO_FONT_STACK};
   font-size: 8.5pt;
   line-height: 1.4;
   overflow-x: visible;
@@ -72,7 +99,7 @@ pre.ascii-diagram {
   background: #fff;
   border: 1px solid #ddd;
   border-left: 3px solid #999;
-  font-family: 'Consolas', 'Courier New', monospace;
+  font-family: ${MONO_FONT_STACK};
   page-break-inside: avoid;
 }
 table {
@@ -102,7 +129,7 @@ th, td {
   hyphens: auto;
 }
 code {
-  font-family: 'Consolas', monospace;
+  font-family: ${MONO_FONT_STACK};
   font-size: 9pt;
   background: #f0f0f0;
   padding: 1px 4px;
@@ -389,9 +416,6 @@ table .math-display { margin: 0.35em 0; }
 }
 `;
 
-import fs from 'fs';
-import path from 'path';
-
 /**
  * Loaded after katex.min.css so PDF print rules win. Justified body text
  * stretches gaps between KaTeX spans and fragments derivatives (e.g. f′).
@@ -442,6 +466,8 @@ td:has(.katex), th:has(.katex) {
 `;
 
 let katexCssCache: string | null = null;
+/** KaTeX CSS with absolute file:// font URLs — required for Puppeteer setContent(); relative url(fonts/…) does not load. */
+let katexCssPdfCache: string | null = null;
 
 export function getMathCss(): string {
   if (!katexCssCache) {
@@ -456,13 +482,33 @@ export function getMathCss(): string {
   return katexCssCache;
 }
 
+/** Use for PDF/DOCX Puppeteer rendering so KaTeX woff2 fonts resolve from disk. */
+export function getMathCssForPdf(): string {
+  if (katexCssPdfCache) return katexCssPdfCache;
+  const raw = getMathCss();
+  if (!raw) {
+    katexCssPdfCache = '';
+    return katexCssPdfCache;
+  }
+  try {
+    const katexCssPath = require.resolve('katex/dist/katex.min.css');
+    const dir = path.dirname(katexCssPath);
+    const fontsBase = pathToFileURL(path.join(dir, 'fonts') + path.sep).href;
+    katexCssPdfCache = raw.replace(/url\(fonts\//g, `url(${fontsBase}`);
+  } catch {
+    katexCssPdfCache = raw;
+  }
+  return katexCssPdfCache;
+}
+
 export function wrapInHtmlTemplate(bodyHtml: string, highlightCss: string, options?: { mathEnabled?: boolean }): string {
-  const mathCss = options?.mathEnabled ? getMathCss() : '';
+  const mathCss = options?.mathEnabled ? getMathCssForPdf() : '';
   const mathOverrides = options?.mathEnabled ? PRINT_MATH_OVERRIDES : '';
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+${getUnicodeFontLinkTags()}
 <style>
 ${PRINT_CSS}
 ${highlightCss}
