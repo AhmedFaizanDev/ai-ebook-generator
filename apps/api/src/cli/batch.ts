@@ -24,6 +24,7 @@ import { parse } from 'csv-parse/sync';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { formatUnknownError } from '@/lib/error-format';
 import { orchestrate } from '@/orchestrator/index';
 import { rebuildFinalMarkdown } from '@/orchestrator/build-markdown';
 import { exportPDF } from '@/pdf/generate-pdf';
@@ -733,7 +734,7 @@ async function main(): Promise<void> {
         if (failedIdx !== -1) progress.failed.splice(failedIdx, 1);
         saveProgress(progress);
       } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
+        const errMsg = formatUnknownError(err);
         console.error(`[BATCH] FAILED: "${row.title}" — ${errMsg}\n`);
         if (!progress.failed.includes(row.title)) {
           progress.failed.push(row.title);
