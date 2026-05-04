@@ -6,8 +6,10 @@ import { wrapInHtmlTemplate } from './html-template';
 import { getBrowser, closeBrowser } from './browser-pool';
 import { auditExportHtml } from './export-preflight';
 import { buildExportQualityReport } from '@/orchestrator/content-validator';
+import { formatUnknownError } from '@/lib/error-format';
 
-const MAX_CHUNK_CHARS = 350_000;
+/** Stay below heavy Chromium printToPDF limits (memory / raster timeouts on math-heavy HTML). */
+const MAX_CHUNK_CHARS = 260_000;
 
 function splitHtmlByH1(html: string): string[] {
   const copyrightEndMarker = '</div>\n';
@@ -104,15 +106,30 @@ export async function exportPDF(session: SessionState): Promise<void> {
     timeout: 180_000,
   };
 
-  const isRetriablePuppeteerError = (msg: string) =>
-    msg.includes('Target closed') ||
-    msg.includes('Protocol error') ||
-    msg.includes('Protocol error (IO.read)') ||
-    msg.includes('Protocol error (Runtime.callFunctionOn)') ||
-    msg.includes('Protocol error (Page.printToPDF)') ||
-    msg.includes('Connection closed') ||
-    msg.includes('Navigation timeout') ||
-    msg.includes('Session closed');
+  const isRetriablePuppeteerError = (msg: string) => {
+    const m = msg.toLowerCase();
+    return (
+      msg.includes('Target closed') ||
+      msg.includes('Protocol error') ||
+      msg.includes('Protocol error (IO.read)') ||
+      msg.includes('Protocol error (Runtime.callFunctionOn)') ||
+      msg.includes('Protocol error (Page.printToPDF)') ||
+      msg.includes('Page.printToPDF') ||
+      msg.includes('printToPDF') ||
+      m.includes('printing failed') ||
+      m.includes('timed out') ||
+      m.includes('timeout') ||
+      msg.includes('Connection closed') ||
+      msg.includes('Navigation timeout') ||
+      msg.includes('Session closed') ||
+      msg.includes('Target.createTarget') ||
+      msg.includes('Session detached') ||
+      msg.includes('Browser has disconnected') ||
+      // Transient / overloaded GPU or sandbox flakes on large KaTeX pages
+      m.includes('crash') ||
+      m.includes('renderer')
+    );
+  };
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const MAX_ATTEMPTS = 3;
@@ -151,46 +168,74 @@ export async function exportPDF(session: SessionState): Promise<void> {
       try {
         await page.setViewport({ width: 794, height: 1123 });
         await page.setContent(wrappedHtml, { waitUntil: 'load', timeout: 120_000 });
+        await page.evaluate(async () => {
+          try {
+            await document.fonts.ready;
+          } catch {
+            /* Fonts API can reject on malformed @font-face / network flakes — PDF continues */
+          }
+        });
 
         // Render Mermaid diagrams if any <pre class="mermaid"> exist
         if (visuals?.mermaid?.enabled) {
           const hasMermaid = await page.evaluate(() => document.querySelectorAll('pre.mermaid').length > 0);
           if (hasMermaid) {
             await page.addScriptTag({ url: 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js' });
-            await page.evaluate(() => {
-              (window as any).mermaid.initialize({
-                startOnLoad: false,
-                theme: 'default',
-                securityLevel: 'loose',
-                flowchart: { useMaxWidth: true, htmlLabels: true },
-              });
-              return (window as any).mermaid.run({ querySelector: 'pre.mermaid' });
+            // Do not let mermaid.run() reject bubble through page.evaluate — Puppeteer surfaces it as "Object: Object".
+            const mermaidRun = await page.evaluate(async () => {
+              try {
+                const m = (window as any).mermaid;
+                m.initialize({
+                  startOnLoad: false,
+                  theme: 'default',
+                  securityLevel: 'loose',
+                  flowchart: { useMaxWidth: true, htmlLabels: true },
+                });
+                await m.run({ querySelector: 'pre.mermaid' });
+                return { ok: true as const };
+              } catch (e: unknown) {
+                let detail = '';
+                if (e instanceof Error) detail = e.message || e.name || 'Error';
+                else if (e && typeof e === 'object' && 'message' in e) detail = String((e as { message: unknown }).message);
+                else detail = String(e);
+                return { ok: false as const, error: detail };
+              }
             });
+            if (!mermaidRun.ok) {
+              console.warn(`[PDF] Mermaid run() failed in chunk ${i + 1}: ${mermaidRun.error}`);
+              if (visuals.strictMode) {
+                throw new Error(`Mermaid run failed: ${mermaidRun.error}`);
+              }
+            }
             await new Promise((r) => setTimeout(r, 1000));
 
             // Verify each mermaid container rendered to SVG
             const mermaidResults: { total: number; failed: number; failedTexts: string[] } = await page.evaluate(() => {
-              const containers = document.querySelectorAll('.mermaid-container');
-              let failed = 0;
-              const failedTexts: string[] = [];
-              containers.forEach((c) => {
-                const svg = c.querySelector('svg');
-                const hasSyntaxError = c.textContent?.toLowerCase().includes('syntax error') ?? false;
-                if (!svg || hasSyntaxError) {
-                  failed++;
-                  failedTexts.push((c.textContent ?? '').slice(0, 120));
-                  (c as HTMLElement).style.display = 'none';
-                } else {
-                  svg.setAttribute('style', 'max-width:100%;max-height:500px;height:auto;');
-                  if (!svg.getAttribute('viewBox') && svg.getBBox) {
-                    try {
-                      const bb = svg.getBBox();
-                      svg.setAttribute('viewBox', `0 0 ${bb.width} ${bb.height}`);
-                    } catch { /* ignore */ }
+              try {
+                const containers = document.querySelectorAll('.mermaid-container');
+                let failed = 0;
+                const failedTexts: string[] = [];
+                containers.forEach((c) => {
+                  const svg = c.querySelector('svg');
+                  const hasSyntaxError = c.textContent?.toLowerCase().includes('syntax error') ?? false;
+                  if (!svg || hasSyntaxError) {
+                    failed++;
+                    failedTexts.push((c.textContent ?? '').slice(0, 120));
+                    (c as HTMLElement).style.display = 'none';
+                  } else {
+                    svg.setAttribute('style', 'max-width:100%;max-height:500px;height:auto;');
+                    if (!svg.getAttribute('viewBox') && svg.getBBox) {
+                      try {
+                        const bb = svg.getBBox();
+                        svg.setAttribute('viewBox', `0 0 ${bb.width} ${bb.height}`);
+                      } catch { /* ignore */ }
+                    }
                   }
-                }
-              });
-              return { total: containers.length, failed, failedTexts };
+                });
+                return { total: containers.length, failed, failedTexts };
+              } catch {
+                return { total: 0, failed: 0, failedTexts: [] as string[] };
+              }
             });
 
             if (mermaidResults.failed > 0) {
@@ -211,12 +256,12 @@ export async function exportPDF(session: SessionState): Promise<void> {
         console.log(`[PDF] Chunk ${i + 1}/${htmlChunks.length} done (${Math.round(pdfUint8.length / 1024)}KB PDF)`);
         break;
       } catch (err) {
-        lastErr = err instanceof Error ? err : new Error(String(err));
+        const msg = formatUnknownError(err);
+        lastErr = new Error(msg);
         await page.close().catch(() => {});
-        const msg = lastErr.message;
         console.error(`[PDF] Chunk ${i + 1} attempt ${attempt + 1} failed: ${msg}`);
         if (attempt < MAX_ATTEMPTS - 1 && isRetriablePuppeteerError(msg)) {
-          console.log('[PDF] Retriable (Target/Protocol closed) — closing browser, launching fresh one...');
+          console.log('[PDF] Retriable Chromium/Puppeteer error — closing browser, launching fresh one...');
           await closeBrowser();
           await sleep(1500);
           continue;

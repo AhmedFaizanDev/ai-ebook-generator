@@ -140,15 +140,21 @@ async function rasterizeVisualsForDocx(html: string, mermaidEnabled: boolean): P
   try {
     await page.setViewport({ width: 794, height: 1123 });
     await page.setContent(html, { waitUntil: 'load', timeout: 120_000 });
+    await page.evaluate(() => document.fonts.ready);
 
     if (mermaidEnabled) {
       const hasMermaid = await page.evaluate(() => document.querySelectorAll('pre.mermaid').length > 0);
       if (hasMermaid) {
         try {
           await page.addScriptTag({ url: 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js' });
-          await page.evaluate(() => {
-            (window as any).mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose' });
-            return (window as any).mermaid.run({ querySelector: 'pre.mermaid' });
+          await page.evaluate(async () => {
+            const m = (window as any).mermaid;
+            m.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose' });
+            try {
+              await m.run({ querySelector: 'pre.mermaid' });
+            } catch {
+              /* outer catch logs; avoid opaque evaluate rejections */
+            }
           });
           await new Promise((r) => setTimeout(r, 1000));
         } catch (err) {
