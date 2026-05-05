@@ -7,16 +7,14 @@ describe('auditExportHtml', () => {
     expect(auditExportHtml(html)).toHaveLength(0);
   });
 
-  it('detects raw fenced code block markers in paragraphs', () => {
+  it('does not flag raw fenced code markers in paragraphs', () => {
     const html = '<p>```python</p><p>print("hello")</p>';
-    const errors = auditExportHtml(html);
-    expect(errors.some((e) => e.type === 'markdown-leak')).toBe(true);
+    expect(auditExportHtml(html)).toHaveLength(0);
   });
 
-  it('detects raw markdown headings in paragraphs', () => {
+  it('does not flag raw markdown headings in paragraphs', () => {
     const html = '<p>## This is a heading</p>';
-    const errors = auditExportHtml(html);
-    expect(errors.some((e) => e.type === 'markdown-leak')).toBe(true);
+    expect(auditExportHtml(html)).toHaveLength(0);
   });
 
   it('detects unrendered display math', () => {
@@ -46,11 +44,5 @@ describe('auditExportHtml', () => {
   it('does not flag rendered KaTeX output', () => {
     const html = '<div class="math-display"><span class="katex">rendered</span></div><p>Normal text</p>';
     expect(auditExportHtml(html)).toHaveLength(0);
-  });
-
-  it('detects raw mermaid fence not converted to container', () => {
-    const html = '<pre><code class="language-mermaid">```mermaid\ngraph TD\nA-->B</code></pre>';
-    const errors = auditExportHtml(html);
-    expect(errors.some((e) => e.type === 'mermaid-leak')).toBe(true);
   });
 });

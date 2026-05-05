@@ -108,7 +108,7 @@ export interface SubtopicContext {
 }
 
 export interface ContentBlockError {
-  type: 'mermaid' | 'equation' | 'markdown-leak' | 'code-fence';
+  type: 'equation';
   message: string;
   /** Zero-based index of the block within the markdown (for targeted retry prompts). */
   blockIndex: number;

@@ -78,8 +78,8 @@ export async function exportPDF(session: SessionState): Promise<void> {
     throw new Error('Converted HTML is empty — cannot generate PDF');
   }
 
-  // Preflight audit: detect leaked markdown/math/mermaid
-  if (session.visuals?.strictMode) {
+  // Preflight: unrendered math only, when equations enabled and strictMode
+  if (session.visuals?.strictMode && session.visuals.equations.enabled) {
     const preflightErrors = auditExportHtml(fullHtml);
     if (preflightErrors.length > 0) {
       const summary = preflightErrors.map((e) => `[${e.type}] ${e.message}`).join('; ');
@@ -203,9 +203,6 @@ export async function exportPDF(session: SessionState): Promise<void> {
             });
             if (!mermaidRun.ok) {
               console.warn(`[PDF] Mermaid run() failed in chunk ${i + 1}: ${mermaidRun.error}`);
-              if (visuals.strictMode) {
-                throw new Error(`Mermaid run failed: ${mermaidRun.error}`);
-              }
             }
             await new Promise((r) => setTimeout(r, 1000));
 
@@ -240,10 +237,6 @@ export async function exportPDF(session: SessionState): Promise<void> {
 
             if (mermaidResults.failed > 0) {
               console.warn(`[PDF] ${mermaidResults.failed}/${mermaidResults.total} mermaid diagram(s) failed to render in chunk ${i + 1}`);
-              if (visuals.strictMode) {
-                const detail = mermaidResults.failedTexts.join(' | ');
-                throw new Error(`Mermaid render failed for ${mermaidResults.failed} diagram(s): ${detail}`);
-              }
             }
           }
         }

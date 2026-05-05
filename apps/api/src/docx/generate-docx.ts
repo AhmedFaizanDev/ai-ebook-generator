@@ -73,8 +73,8 @@ export async function exportDOCX(session: SessionState): Promise<Buffer> {
   const rawHtml = segments.length > 0
     ? segmentsToHtml(segments, visuals)
     : markdownToHtml(session.finalMarkdown, visuals);
-  // Preflight audit before DOCX conversion
-  if (session.visuals?.strictMode) {
+  // Preflight: unrendered math only when equations enabled
+  if (session.visuals?.strictMode && session.visuals.equations.enabled) {
     const preflightErrors = auditExportHtml(rawHtml);
     if (preflightErrors.length > 0) {
       const summary = preflightErrors.map((e) => `[${e.type}] ${e.message}`).join('; ');

@@ -3,7 +3,7 @@ import { validateContentBlocks } from './content-validator';
 import { ContentValidationError } from './content-validation-error';
 
 /**
- * Run fence-aware validation (mermaid, math, leaks, code fences) on generated markdown.
+ * Run equation validation when equations are enabled (see validateContentBlocks).
  * In strictMode, throws on any error; otherwise logs warnings and continues.
  */
 export function enforceContentAfterGeneration(
